@@ -423,6 +423,7 @@ tjs_uint64 tTVPLocalFileStream::GetSize()
 }
 //---------------------------------------------------------------------------
 
+#if !defined(_KRKRSDL3_IOS)
 std::string TVPGetDefaultFileDir()
 {
     char* path = SDL_GetCurrentDirectory();
@@ -441,6 +442,7 @@ std::vector<std::string> TVPGetAppStoragePath()
     ret.emplace_back(TVPGetDefaultFileDir());
     return ret;
 }
+#endif // !_KRKRSDL3_IOS
 
 bool TVPCheckExistentLocalFile(const ttstr& name)
 {
