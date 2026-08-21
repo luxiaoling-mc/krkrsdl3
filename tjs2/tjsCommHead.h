@@ -19,9 +19,6 @@
 #include <memory>
 #include <algorithm>
 #include <functional>
-#include <vector>
-#include <queue>
-#include <deque>
 #include <set>
 #include <string>
 #include <stdexcept>

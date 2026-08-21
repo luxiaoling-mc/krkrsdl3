@@ -13,6 +13,10 @@
 
 #include "tjsVariant.h"
 
+#include <atomic>
+#include <vector>
+#include <deque>
+
 namespace TJS
 {
 //---------------------------------------------------------------------------
@@ -268,56 +272,183 @@ public:
 // tTJSObjectPool
 //---------------------------------------------------------------------------
 template<typename T>
-class tTJSObjectPool // 线程安全要不要考虑？
+class tTJSObjectPool
 {
-    std::vector<T*> m_entries;
-    std::vector<size_t> m_freeSlots;
+    struct Slot
+    {
+        std::atomic<T*> obj{nullptr};
+        std::atomic<uint32_t> gen{0};
+    };
+
+    // 使用 deque 避免元素移动
+    std::deque<Slot> slots;
+    std::atomic<size_t> size{0};
+    std::atomic<size_t> head{0};
+
+    // 空闲栈
+    std::vector<size_t> freeStack;
+    std::atomic<size_t> freeStackSize{0};
 
 public:
-    // 调用方需要记录index，使用index加速删除，否则严重影响擦写性能
+    tTJSObjectPool(size_t initialCapacity = 1024)
+    {
+        slots.resize(initialCapacity);
+        freeStack.resize(initialCapacity);
+        for (size_t i = 0; i < initialCapacity; ++i)
+        {
+            freeStack[i] = i;
+        }
+        head = initialCapacity;
+        freeStackSize = initialCapacity;
+    }
+
     size_t registerObject(T* obj)
     {
         if (!obj)
             return (size_t)-1;
 
-        size_t index;
-        if (m_freeSlots.empty())
+        size_t idx = popFreeSlot();
+        if (idx == (size_t)-1)
         {
-            index = m_entries.size();
-            m_entries.push_back(obj);
+            // 扩展池子
+            idx = expand();
+            // 如果扩展后仍然失败，返回错误
+            if (idx == (size_t)-1)
+                return (size_t)-1;
         }
-        else
-        {
-            index = m_freeSlots.back();
-            m_freeSlots.pop_back();
-            m_entries[index] = obj;
-        }
-        return index;
+
+        slots[idx].obj.store(obj, std::memory_order_release);
+        slots[idx].gen.fetch_add(1, std::memory_order_acq_rel);
+        return idx;
     }
 
-    void unregisterObject(size_t index)
+    void unregisterObject(size_t idx)
     {
-        if (index == (size_t)-1 || index >= m_entries.size() || m_entries[index] == nullptr)
+        if (idx >= slots.size())
             return;
-
-        m_entries[index] = nullptr;
-        m_freeSlots.push_back(index);
+        slots[idx].obj.store(nullptr, std::memory_order_release);
+        pushFreeSlot(idx);
     }
 
     void clear()
     {
-        m_entries.clear();
-        m_freeSlots.clear();
+        // 重置所有槽位
+        for (auto& slot : slots)
+        {
+            slot.obj.store(nullptr, std::memory_order_relaxed);
+            slot.gen.store(0, std::memory_order_relaxed);
+        }
+
+        // 重置空闲栈
+        size_t stackSize = freeStackSize.load(std::memory_order_acquire);
+        for (size_t i = 0; i < stackSize; ++i)
+        {
+            freeStack[i] = i;
+        }
+        head.store(stackSize, std::memory_order_release);
+        size.store(0, std::memory_order_release);
     }
 
     template<typename Func>
     void forEach(Func func)
     {
-        for (T* obj : m_entries)
+        size_t currentSize = size.load(std::memory_order_acquire);
+        for (size_t i = 0; i < currentSize; ++i)
         {
+            T* obj = slots[i].obj.load(std::memory_order_acquire);
             if (obj)
+            {
                 func(obj);
+            }
         }
+    }
+
+private:
+    size_t popFreeSlot()
+    {
+        size_t oldHead = head.load(std::memory_order_acquire);
+        while (true)
+        {
+            if (oldHead == 0)
+                return (size_t)-1;
+            size_t newHead = oldHead - 1;
+            size_t idx = freeStack[newHead];
+            if (head.compare_exchange_weak(oldHead, newHead, std::memory_order_acq_rel,
+                                           std::memory_order_acquire))
+            {
+                return idx;
+            }
+        }
+    }
+
+    void pushFreeSlot(size_t idx)
+    {
+        size_t oldHead = head.load(std::memory_order_acquire);
+        while (true)
+        {
+            size_t newHead = oldHead + 1;
+            size_t stackSize = freeStackSize.load(std::memory_order_acquire);
+            if (newHead >= stackSize)
+            {
+                growFreeStack();
+                // 重新加载 head，因为 growFreeStack 可能改变了它
+                oldHead = head.load(std::memory_order_acquire);
+                continue;
+            }
+            freeStack[oldHead] = idx;
+            if (head.compare_exchange_weak(oldHead, newHead, std::memory_order_acq_rel,
+                                           std::memory_order_acquire))
+            {
+                return;
+            }
+        }
+    }
+
+    size_t expand()
+    {
+        size_t oldSize = size.load(std::memory_order_acquire);
+        size_t newSize = oldSize * 2 + 1024;
+
+        // 先尝试压入新槽位
+        for (size_t i = oldSize; i < newSize; ++i)
+        {
+            // 直接压入，不通过 pushFreeSlot（避免递归）
+            size_t oldHead = head.load(std::memory_order_acquire);
+            while (true)
+            {
+                size_t newHead = oldHead + 1;
+                size_t stackSize = freeStackSize.load(std::memory_order_acquire);
+                if (newHead >= stackSize)
+                {
+                    growFreeStack();
+                    oldHead = head.load(std::memory_order_acquire);
+                    continue;
+                }
+                freeStack[oldHead] = i;
+                if (head.compare_exchange_weak(oldHead, newHead, std::memory_order_acq_rel,
+                                               std::memory_order_acquire))
+                {
+                    break;
+                }
+            }
+        }
+
+        // 扩展 slots
+        slots.resize(newSize);
+
+        // 更新 size
+        size.store(newSize, std::memory_order_release);
+
+        // 获取一个空闲槽位
+        return popFreeSlot();
+    }
+
+    void growFreeStack()
+    {
+        size_t oldSize = freeStackSize.load(std::memory_order_acquire);
+        size_t newSize = oldSize * 2 + 1024;
+        freeStack.resize(newSize);
+        freeStackSize.store(newSize, std::memory_order_release);
     }
 };
 }; // namespace TJS

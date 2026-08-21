@@ -5,6 +5,7 @@ krkrsdl3的核心源码仓库，源码构建参考[krkrsdl3_build](https://githu
 # 目录结构说明
 
 ```
+📁 core/ # 核心代码
 ├── 📁 archive/# 数据包格式相关代码
 ├── 📁 main/   # 引擎运行内核代码 窗体/事件循环/线程等
 ├── 📁 media/  # 媒体文件格式相关代码
@@ -16,6 +17,9 @@ krkrsdl3的核心源码仓库，源码构建参考[krkrsdl3_build](https://githu
 ├── 📁 render/ # 渲染相关代码
 ├── 📁 script/ # tjs2 native绑定代码
 ├── 📁 utils/  # 工具包
+📁 environ/ # 不同系统/芯片架构之间的差异化代码
+📁 plugins/ # 扩展插件代码
+📁 tjs2/    # tjs2语言内核代码
 ```
 
 # 依赖库说明

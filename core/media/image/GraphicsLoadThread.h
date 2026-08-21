@@ -2,6 +2,8 @@
 #ifndef __GRAPHICS_LOAD_THREAD_H__
 #define __GRAPHICS_LOAD_THREAD_H__
 
+#include <queue>
+
 #include "PlatformThread.h"
 #include "NativeEventQueue.h"
 #include "TVPGraphicsLoader.h"
