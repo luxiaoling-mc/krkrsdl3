@@ -255,8 +255,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
     return SDL_APP_CONTINUE;
 }
 
-#if defined(_KRKRSDL3_ANDROID) || defined(_KRKRSDL3_EMSCRIPTEN)
-// 触屏事件机制（Android / WASM 移动端）
+#if defined(_KRKRSDL3_ANDROID) || defined(_KRKRSDL3_EMSCRIPTEN) || defined(_KRKRSDL3_IOS)
+// 触屏事件机制（Android / WASM / iOS 移动端）
 enum TouchState
 {
     STATE_IDLE,
@@ -516,7 +516,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
             break;
         }
 #endif
-#if defined(_KRKRSDL3_ANDROID) || defined(_KRKRSDL3_EMSCRIPTEN)
+#if defined(_KRKRSDL3_ANDROID) || defined(_KRKRSDL3_EMSCRIPTEN) || defined(_KRKRSDL3_IOS)
         // 触屏事件
         case SDL_EVENT_FINGER_DOWN:
             handleFingerDown(event->tfinger);
