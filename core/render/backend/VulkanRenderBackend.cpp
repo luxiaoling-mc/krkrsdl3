@@ -49,16 +49,27 @@ struct WindowPushConstants
 };
 static_assert(sizeof(WindowPushConstants) == 24, "window push constant layout");
 
-// 2D 网格 push constant：与 vk2d_quad.frag 的布局一致（vec4 + vec2 + 3 floats = 36 字节）
+// 2D 网格 push constant：与 vk2d_quad.frag 的 std140 布局一致（48 字节）
 struct MeshPushConstants
 {
-    float uniformColor[4];
-    float viewportX, viewportY;
-    float enableMask;  // 0.0 / 1.0
-    float enableColor; // 0.0 / 1.0
-    float opa;
+    float viewportX, viewportY; // vec2 @0
+    float enableMask;           // @8
+    float enableColor;          // @12
+    float opa;                  // @16
+    float pad[3];               // @20-31
+    float uniformColor[4];      // @32（16 字节对齐）
 };
-static_assert(sizeof(MeshPushConstants) == 36, "mesh push constant layout");
+static_assert(sizeof(MeshPushConstants) == 48, "mesh push constant layout");
+
+// Layer 合成 push constant：与 vk2d_layer.frag 的 std140 布局一致（32 字节）
+struct LayerPushConstants
+{
+    float opa;                  // @0
+    int method;                 // @4（LayerBlendMethod）
+    float pad[2];               // @8-15
+    alignas(16) float uniformColor[4]; // @16（16 字节对齐）
+};
+static_assert(sizeof(LayerPushConstants) == 32, "layer push constant layout");
 
 bool CheckVkResult(VkResult result, const char* what)
 {
@@ -123,6 +134,12 @@ public:
     void ClearTarget(bool clearColor) override;
     uint8_t* LockTarget(void* target, int& pitch) override;
     void UnlockTarget(void* target) override;
+    void* GetTargetTexture(void* target) override;
+    void UpdateTargetTexture(void* target,
+                             const uint8_t* pixels,
+                             int width,
+                             int height,
+                             int pitch) override;
     void* CreateTexture(int width, int height) override;
     void UpdateTexture(void* texture, const uint8_t* pixels, int width, int height, int pitch) override;
     void DestroyTexture(void* texture) override;
@@ -134,6 +151,18 @@ public:
                   int indexCount,
                   void* texture,
                   float opacity) override;
+
+    // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
+    void LayerSetBlend(int method, float opacity, const float* uniformColor) override;
+    void LayerDrawRect(void* texture,
+                       float x,
+                       float y,
+                       float w,
+                       float h,
+                       float u0,
+                       float v0,
+                       float u1,
+                       float v1) override;
 
 private:
     // ---- 统一贴图（窗口贴图与一般贴图共用同一实现）----
@@ -155,6 +184,7 @@ private:
         VkImageView view = VK_NULL_HANDLE;
         VkFramebuffer framebuffer = VK_NULL_HANDLE;
         VkDescriptorSet maskSet = VK_NULL_HANDLE; // 作为蒙版采样时绑定（set1）
+        Texture* texture = nullptr; // 采样包装（set0 布局，注册在 textures_）
         int width = 0, height = 0;
     };
     Texture* FindTexture(void* handle) const;
@@ -181,13 +211,22 @@ private:
     bool EnsureMeshPipelines();
     bool BeginPass(Target* target, bool clear);
     void EndPass();
+    void FlushMeshCommands(); // 提交并等待未录制的 mesh 命令（销毁被引用资源前必须先调用）
     bool EnsureStaging(size_t bytes);
     bool EnsureVertexBuffers(size_t vertexBytes, size_t indexBytes);
+
+    // Layer 合成（惰性初始化）
+    bool EnsureLayerPipelines();
 
     Target* FindTarget(void* handle) const;
 
     bool initialized_ = false;
+
     bool swapchainDirty_ = false;
+    bool frameActive_ = false; // BeginFrame 成功开始、等待 EndFrame 提交
+
+
+
 
     // 共享设备
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -240,6 +279,13 @@ private:
     bool meshReady_ = false;
     bool commandActive_ = false;
 
+    // Layer 合成管线（惰性创建；与网格共用 render pass/命令缓冲/顶点缓冲）
+    VkPipelineLayout layerPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline layerPipelines_[9] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                     VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                     VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    bool layerReady_ = false;
+
     VkBuffer meshVertexBuffer_ = VK_NULL_HANDLE;
     VkDeviceMemory meshVertexMemory_ = VK_NULL_HANDLE;
     size_t meshVertexCapacity_ = 0;
@@ -266,6 +312,11 @@ private:
     bool skipDraw_ = false;
     bool enableColor_ = false;
     float uniformColor_[4] = {0, 0, 0, 0};
+
+    // Layer 合成状态
+    int layerMethod_ = 0;
+    float layerOpa_ = 1.0f;
+    float layerUniformColor_[4] = {0, 0, 0, 0};
 
     std::vector<Target*> targets_;
     std::vector<Texture*> textures_;
@@ -887,29 +938,42 @@ void VulkanRenderBackend::BeginFrame(int winWidth, int winHeight)
         return;
     (void)winWidth;
     (void)winHeight;
+    frameActive_ = false;
     RecreateSwapchainIfNeeded();
     if (!swapchain_ || swapchainDirty_)
         return;
 
-    // 等待上一帧完成
-    vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX);
-    vkResetFences(device_, 1, &frameFence_);
+    // 等待上一帧完成（超时则跳过本帧；不重置栅栏，避免无提交可等待）
+    VkResult waitRes = vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, 500000000ull);
+    if (waitRes == VK_TIMEOUT)
+    {
+        VkResult fs = vkGetFenceStatus(device_, frameFence_);
+        TVPConsoleLog("Vulkan BeginFrame: frame fence timeout (prev frame never signaled, status=%d)",
+                      (int)fs);
+        return; // 上一帧仍在执行，跳过本帧
+    }
 
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, imageReady_, VK_NULL_HANDLE, &currentImage_);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
+        TVPConsoleLog("Vulkan BeginFrame: acquire returned %d (out-of-date/suboptimal)", (int)result);
         swapchainDirty_ = true;
-        return;
+        return; // 栅栏仍处于已信号状态，下次可继续等待
     }
     if (!CheckVkResult(result, "AcquireNextImage"))
         return;
 
+    // 只有帧确定会提交后才重置栅栏；若后续失败则用空提交重新置位
+    vkResetFences(device_, 1, &frameFence_);
     vkResetCommandBuffer(frameCommandBuffer_, 0);
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!CheckVkResult(vkBeginCommandBuffer(frameCommandBuffer_, &beginInfo), "BeginCommandBuffer"))
+    {
+        vkQueueSubmit(graphicsQueue_, 0, nullptr, frameFence_); // 重新置位栅栏
         return;
+    }
 
     VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
     VkRenderPassBeginInfo rpBegin{};
@@ -921,6 +985,7 @@ void VulkanRenderBackend::BeginFrame(int winWidth, int winHeight)
     rpBegin.clearValueCount = 1;
     rpBegin.pClearValues = &clearColor;
     vkCmdBeginRenderPass(frameCommandBuffer_, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    frameActive_ = true;
 
     VkViewport viewport{};
     viewport.x = 0;
@@ -967,12 +1032,24 @@ void VulkanRenderBackend::DrawWindowTexture(void* handle, float posX, float posY
 
 void VulkanRenderBackend::EndFrame()
 {
-    if (!initialized_ || !swapchain_ || swapchainDirty_)
+    if (!initialized_ || !swapchain_ || swapchainDirty_ || !frameActive_)
+    {
+        if (frameActive_)
+            TVPConsoleLog("Vulkan EndFrame early-return (init=%d swap=%d dirty=%d)",
+                          (int)initialized_, swapchain_ != VK_NULL_HANDLE, (int)swapchainDirty_);
+        frameActive_ = false;
         return;
+    }
+    frameActive_ = false;
 
     vkCmdEndRenderPass(frameCommandBuffer_);
     if (!CheckVkResult(vkEndCommandBuffer(frameCommandBuffer_), "EndCommandBuffer"))
         return;
+
+    // 提交未提交的 2D 网格命令（离屏 composite/填充绘制）。
+    // 纯 GPU 路径下 composite 完成后没有 LockTarget 提交点，必须在这里把
+    // mesh 命令提交到队列，且先于窗口帧提交（同队列串行 → 帧采样看到最新内容）。
+    FlushMeshCommands();
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo{};
@@ -996,7 +1073,10 @@ void VulkanRenderBackend::EndFrame()
     presentInfo.pImageIndices = &currentImage_;
     VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        TVPConsoleLog("Vulkan EndFrame: present returned %d (dirty)", (int)result);
         swapchainDirty_ = true;
+    }
     else
         CheckVkResult(result, "QueuePresent");
 }
@@ -1197,6 +1277,8 @@ void VulkanRenderBackend::DestroyTextureInternal(Texture* texture)
         delete texture;
         return;
     }
+    // 已录制的 mesh 命令可能引用本纹理的描述符集：先提交并等待
+    FlushMeshCommands();
     vkDeviceWaitIdle(device_);
     for (size_t i = 0; i < textures_.size(); i++)
     {
@@ -1285,6 +1367,30 @@ bool VulkanRenderBackend::EnsureMeshResources()
         return false;
     uint8_t white[4] = {255, 255, 255, 255};
     UpdateTextureInternal(blankMask_, white, 1, 1, 4);
+
+    // blankMask 作为 set1（蒙版）绑定，必须按 maskSetLayout_ 分配描述符集
+    {
+        VkDescriptorSetAllocateInfo bmAlloc{};
+        bmAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        bmAlloc.descriptorPool = descriptorPool_;
+        bmAlloc.descriptorSetCount = 1;
+        bmAlloc.pSetLayouts = &maskSetLayout_;
+        if (!CheckVkResult(vkAllocateDescriptorSets(device_, &bmAlloc, &blankMask_->set),
+                           "AllocateBlankMaskSet"))
+            return false;
+        VkDescriptorImageInfo bmInfo{};
+        bmInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bmInfo.imageView = blankMask_->view;
+        bmInfo.sampler = sampler_;
+        VkWriteDescriptorSet bmWrite{};
+        bmWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        bmWrite.dstSet = blankMask_->set;
+        bmWrite.dstBinding = 0;
+        bmWrite.descriptorCount = 1;
+        bmWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bmWrite.pImageInfo = &bmInfo;
+        vkUpdateDescriptorSets(device_, 1, &bmWrite, 0, nullptr);
+    }
 
     meshReady_ = true;
     return true;
@@ -1441,11 +1547,11 @@ bool VulkanRenderBackend::EnsureMeshPipelines()
     blendAttachments[kPipelineMultiply].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     blendAttachments[kPipelineMultiply].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     blendAttachments[kPipelineMultiply].alphaBlendOp = VK_BLEND_OP_ADD;
-    // bm 21：SRC_ALPHA / ONE_MINUS_SRC_ALPHA（含 alpha）
+    // bm 21（FillARGB/FillColor/FillMask）：软件语义为覆盖写（无视 alpha 混合）。
+    // 若用 alpha 混合，透明色填充（如 0x00FFFFFF 中性色）无法覆盖旧内容，
+    // 会把图层白底留在目标上。
     blendAttachments[kPipelineColor] = blendAttachments[kPipelineNormal];
-    blendAttachments[kPipelineColor].srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blendAttachments[kPipelineColor].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachments[kPipelineColor].alphaBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[kPipelineColor].blendEnable = VK_FALSE;
 
     for (int i = 0; i < 3; i++)
     {
@@ -1483,6 +1589,214 @@ bool VulkanRenderBackend::EnsureMeshPipelines()
 }
 
 //---------------------------------------------------------------------------
+// Layer 合成管线（软件 RenderManager bm* 语义的混合变体）
+// 与 2D 网格共用 render pass/命令缓冲/顶点缓冲/描述符池；每个方法对应
+// 一个固定混合状态的管线（混合方程/因子烘焙进管线），颜色变换在
+// vk2d_layer.frag 中按 push constant 的 method 完成。
+//---------------------------------------------------------------------------
+bool VulkanRenderBackend::EnsureLayerPipelines()
+{
+    if (layerReady_)
+        return true;
+    if (!initialized_ || device_ == VK_NULL_HANDLE || !meshReady_)
+        return false;
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(LayerPushConstants);
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &textureSetLayout_;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+    if (!CheckVkResult(vkCreatePipelineLayout(device_, &plInfo, nullptr, &layerPipelineLayout_),
+                       "CreateLayerPipelineLayout"))
+        return false;
+
+    VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo vsInfo{};
+    vsInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vsInfo.codeSize = sizeof(kVulkan2DVertSpv);
+    vsInfo.pCode = kVulkan2DVertSpv;
+    VkShaderModuleCreateInfo fsInfo{};
+    fsInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fsInfo.codeSize = sizeof(kVulkan2DLayerFragSpv);
+    fsInfo.pCode = kVulkan2DLayerFragSpv;
+    if (!CheckVkResult(vkCreateShaderModule(device_, &vsInfo, nullptr, &vertModule), "CreateVertexShader") ||
+        !CheckVkResult(vkCreateShaderModule(device_, &fsInfo, nullptr, &fragModule), "CreateFragmentShader"))
+    {
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertModule;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragModule;
+    stages[1].pName = "main";
+
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = 4 * sizeof(float);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attribs[2]{};
+    attribs[0].location = 0;
+    attribs[0].binding = 0;
+    attribs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attribs[0].offset = 0;
+    attribs[1].location = 1;
+    attribs[1].binding = 0;
+    attribs[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attribs[1].offset = 2 * sizeof(float);
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &binding;
+    vertexInput.vertexAttributeDescriptionCount = 2;
+    vertexInput.pVertexAttributeDescriptions = attribs;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    // 各 LayerBlendMethod 的混合状态（与 GL 后端 LayerSetBlend 一一对应）：
+    //   0 COPY / 7 FILL / 9 COPYOPAQUE：不混合（直写）
+    //   1 ALPHA / 2 CONSTALPHA：SRC_ALPHA/ONE_MINUS_SRC_ALPHA（全通道）
+    //   3 ADD：ONE/ONE 加
+    //   4 SUB：ONE/ONE 反向减（dst - src，钳制）
+    //   5 MUL：color=DST_COLOR/ZERO，alpha=ZERO/ZERO
+    //   6 MUL_HDA：color=DST_COLOR/ZERO，alpha=ONE/ZERO
+    //   8 COPYCOLOR：color=ONE/ZERO，alpha=ZERO/ONE
+    //   10 COPYMASK：color=ZERO/ONE，alpha=ONE/ZERO
+    VkPipelineColorBlendAttachmentState blendAttachments[9]{};
+    for (int i = 0; i < 9; i++)
+    {
+        blendAttachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    }
+    // 0: 直写
+    // 1: alpha
+    blendAttachments[1].blendEnable = VK_TRUE;
+    blendAttachments[1].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachments[1].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachments[1].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[1].srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachments[1].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachments[1].alphaBlendOp = VK_BLEND_OP_ADD;
+    // 2: const alpha（与 1 相同混合状态）
+    blendAttachments[2] = blendAttachments[1];
+    // 3: add
+    blendAttachments[3].blendEnable = VK_TRUE;
+    blendAttachments[3].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[3].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[3].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[3].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[3].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[3].alphaBlendOp = VK_BLEND_OP_ADD;
+    // 4: sub（dst - src）
+    blendAttachments[4] = blendAttachments[3];
+    blendAttachments[4].colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    blendAttachments[4].alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    // 5: mul
+    blendAttachments[5].blendEnable = VK_TRUE;
+    blendAttachments[5].srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+    blendAttachments[5].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[5].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[5].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[5].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[5].alphaBlendOp = VK_BLEND_OP_ADD;
+    // 6: mul_hda
+    blendAttachments[6] = blendAttachments[5];
+    blendAttachments[6].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[6].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    // 7: copycolor
+    blendAttachments[7].blendEnable = VK_TRUE;
+    blendAttachments[7].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[7].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[7].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[7].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[7].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[7].alphaBlendOp = VK_BLEND_OP_ADD;
+    // 8: copymask（dest = (dest & RGB) | (src & A)）
+    blendAttachments[8].blendEnable = VK_TRUE;
+    blendAttachments[8].srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[8].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[8].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[8].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[8].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[8].alphaBlendOp = VK_BLEND_OP_ADD;
+
+    for (int i = 0; i < 9; i++)
+    {
+        VkPipelineColorBlendStateCreateInfo colorBlend{};
+        colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlend.attachmentCount = 1;
+        colorBlend.pAttachments = &blendAttachments[i];
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisample;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlend;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = layerPipelineLayout_;
+        pipelineInfo.renderPass = meshClearPass_;
+        pipelineInfo.subpass = 0;
+        if (!CheckVkResult(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                                     &layerPipelines_[i]), "CreateLayerPipelines"))
+        {
+            vkDestroyShaderModule(device_, vertModule, nullptr);
+            vkDestroyShaderModule(device_, fragModule, nullptr);
+            return false;
+        }
+    }
+    vkDestroyShaderModule(device_, vertModule, nullptr);
+    vkDestroyShaderModule(device_, fragModule, nullptr);
+    layerReady_ = true;
+    return true;
+}
+
+//---------------------------------------------------------------------------
 // 目标（离屏）
 //---------------------------------------------------------------------------
 VulkanRenderBackend::Target* VulkanRenderBackend::FindTarget(void* handle) const
@@ -1514,7 +1828,7 @@ void* VulkanRenderBackend::CreateTarget(int width, int height)
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!CheckVkResult(vkCreateImage(device_, &imageInfo, nullptr, &target->image), "CreateTargetImage"))
@@ -1634,6 +1948,43 @@ void* VulkanRenderBackend::CreateTarget(int width, int height)
     write.pImageInfo = &imageInfoDesc;
     vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 
+    // 采样包装：set0（纹理）布局，供 DrawMesh / DrawWindowTexture 按 Texture* 查找
+    target->texture = new Texture();
+    target->texture->image = target->image;
+    target->texture->view = target->view;
+    target->texture->memory = VK_NULL_HANDLE; // 不拥有（归 target）
+    target->texture->width = width;
+    target->texture->height = height;
+    {
+        VkDescriptorSetAllocateInfo texAlloc{};
+        texAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        texAlloc.descriptorPool = descriptorPool_;
+        texAlloc.descriptorSetCount = 1;
+        texAlloc.pSetLayouts = &textureSetLayout_;
+        if (CheckVkResult(vkAllocateDescriptorSets(device_, &texAlloc, &target->texture->set),
+                          "AllocateTargetTextureSet"))
+        {
+            VkDescriptorImageInfo texInfo{};
+            texInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            texInfo.imageView = target->view;
+            texInfo.sampler = sampler_;
+            VkWriteDescriptorSet texWrite{};
+            texWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            texWrite.dstSet = target->texture->set;
+            texWrite.dstBinding = 0;
+            texWrite.descriptorCount = 1;
+            texWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            texWrite.pImageInfo = &texInfo;
+            vkUpdateDescriptorSets(device_, 1, &texWrite, 0, nullptr);
+            textures_.push_back(target->texture);
+        }
+        else
+        {
+            delete target->texture;
+            target->texture = nullptr;
+        }
+    }
+
     targets_.push_back(target);
     return target;
 }
@@ -1657,6 +2008,8 @@ void VulkanRenderBackend::DestroyTarget(void* handle)
         delete target;
         return;
     }
+    // 已录制的 mesh 命令可能引用本 target 的 imageView/描述符集：先提交并等待
+    FlushMeshCommands();
     vkDeviceWaitIdle(device_);
     if (currentTarget_ == target)
     {
@@ -1675,6 +2028,20 @@ void VulkanRenderBackend::DestroyTarget(void* handle)
     }
     if (target->maskSet)
         vkFreeDescriptorSets(device_, descriptorPool_, 1, &target->maskSet);
+    if (target->texture)
+    {
+        for (size_t i = 0; i < textures_.size(); i++)
+        {
+            if (textures_[i] == target->texture)
+            {
+                textures_.erase(textures_.begin() + i);
+                break;
+            }
+        }
+        if (target->texture->set)
+            vkFreeDescriptorSets(device_, descriptorPool_, 1, &target->texture->set);
+        delete target->texture; // 不销毁 image/view/memory（归 target）
+    }
     if (target->framebuffer)
         vkDestroyFramebuffer(device_, target->framebuffer, nullptr);
     if (target->view)
@@ -1689,14 +2056,25 @@ void VulkanRenderBackend::DestroyTarget(void* handle)
 void VulkanRenderBackend::SetTarget(void* handle)
 {
     EndPass();
-    currentTarget_ = FindTarget(handle);
-    passClear_ = false;
+    // 清屏标志语义（与 GL 立即模式对齐）：ClearTarget(true) 的请求应作用于
+    // 下一次对"当前目标"的 pass——调用方常在 ClearTarget 之后再次 SetTarget
+    // 同一目标（如 emote 引擎逐节点 SetTarget），同目标的 SetTarget 不得抹掉
+    // 清屏请求，否则 pass 走 LOAD 变体导致残影。
+    Target* next = FindTarget(handle);
+    if (next != currentTarget_)
+        passClear_ = false;
+    currentTarget_ = next;
 }
 
 void VulkanRenderBackend::ClearTarget(bool clearColor)
 {
-    // 软件后端语义：clearColor=false 仅清深度（Vulkan 2D 无深度附件）→ 不清屏
-    passClear_ = clearColor;
+    // 软件后端语义：clearColor=false 仅清深度（Vulkan 2D 无深度附件）→ 不清屏。
+    // 清屏请求一旦提出（true）即保持到下一次 pass 消费为止——与 GL 立即清屏的
+    // 净效果一致；后续 ClearTarget(false) 不能"撤回"已请求的清屏
+    //（例如 RenderFrame 先 ClearTarget(true)、各 D3D 层绘制前又 ClearTarget(false)，
+    // GL 下目标已被清过，VK 下清屏必须仍然发生）。
+    if (clearColor)
+        passClear_ = true;
 }
 
 //---------------------------------------------------------------------------
@@ -1718,6 +2096,26 @@ bool VulkanRenderBackend::BeginPass(Target* target, bool clear)
     }
 
     VkClearValue clearValue = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+    if (!clear)
+    {
+        // LOAD pass 会读取目标自身内容（混合到已有内容）：确保同一 command buffer 内
+        // 上一次对该目标的 color attachment 写入对本次 LOAD 可见。
+        VkImageMemoryBarrier loadBarrier{};
+        loadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        loadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        loadBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        loadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        loadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        loadBarrier.image = target->image;
+        loadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        loadBarrier.subresourceRange.levelCount = 1;
+        loadBarrier.subresourceRange.layerCount = 1;
+        loadBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        loadBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(meshCommandBuffer_, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &loadBarrier);
+    }
     VkRenderPassBeginInfo rpBegin{};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpBegin.renderPass = clear ? meshClearPass_ : meshLoadPass_;
@@ -1743,6 +2141,8 @@ bool VulkanRenderBackend::BeginPass(Target* target, bool clear)
     vkCmdSetScissor(meshCommandBuffer_, 0, 1, &scissor);
 
     passActive_ = true;
+    if (clear)
+        passClear_ = false; // 清屏请求已消费，后续同目标 pass 用 LOAD 累积
     return true;
 }
 
@@ -1751,6 +2151,32 @@ void VulkanRenderBackend::EndPass()
     if (passActive_ && commandActive_)
         vkCmdEndRenderPass(meshCommandBuffer_);
     passActive_ = false;
+}
+
+void VulkanRenderBackend::FlushMeshCommands()
+{
+    // 提交并等待当前录制的 mesh 命令。调用场景：
+    //   1. 渲染目标被销毁前（已录制命令可能引用其 imageView/描述符集）；
+    //   2. 每帧呈现前（纯 GPU 路径下没有其他提交点）；
+    //   3. 采样一个"本 command buffer 内刚被写入"的 target 前
+    //      （写后读需要跨提交边界保证可见性——RADV 会忽略 GENERAL→GENERAL 的
+    //       image barrier，同提交内写后读结果未定义）。
+    if (!commandActive_)
+        return;
+    EndPass();
+    if (CheckVkResult(vkEndCommandBuffer(meshCommandBuffer_), "EndMeshCommandBuffer"))
+    {
+        vkResetFences(device_, 1, &meshFence_);
+        VkSubmitInfo meshSubmit{};
+        meshSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        meshSubmit.commandBufferCount = 1;
+        meshSubmit.pCommandBuffers = &meshCommandBuffer_;
+        if (CheckVkResult(vkQueueSubmit(graphicsQueue_, 1, &meshSubmit, meshFence_), "SubmitMeshCommandBuffer"))
+            vkWaitForFences(device_, 1, &meshFence_, VK_TRUE, UINT64_MAX);
+        else
+            vkQueueSubmit(graphicsQueue_, 0, nullptr, meshFence_); // 重新置位栅栏，避免后续等待悬挂
+    }
+    commandActive_ = false;
 }
 
 bool VulkanRenderBackend::EnsureStaging(size_t bytes)
@@ -1793,7 +2219,7 @@ bool VulkanRenderBackend::EnsureStaging(size_t bytes)
 bool VulkanRenderBackend::EnsureVertexBuffers(size_t vertexBytes, size_t indexBytes)
 {
     auto ensureBuffer = [&](VkBuffer& buffer, VkDeviceMemory& memory, size_t& capacity, size_t bytes,
-                            VkBufferUsageFlags usage) -> bool {
+                            VkBufferUsageFlags usage, uint8_t*& mapped) -> bool {
         if (capacity >= bytes && buffer)
             return true;
         if (buffer)
@@ -1803,6 +2229,7 @@ bool VulkanRenderBackend::EnsureVertexBuffers(size_t vertexBytes, size_t indexBy
             buffer = VK_NULL_HANDLE;
             memory = VK_NULL_HANDLE;
             capacity = 0;
+            mapped = nullptr; // 旧映射失效
         }
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1827,9 +2254,9 @@ bool VulkanRenderBackend::EnsureVertexBuffers(size_t vertexBytes, size_t indexBy
         return true;
     };
     if (!ensureBuffer(meshVertexBuffer_, meshVertexMemory_, meshVertexCapacity_, vertexBytes,
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, meshVertexMapped_) ||
         !ensureBuffer(meshIndexBuffer_, meshIndexMemory_, meshIndexCapacity_, indexBytes,
-                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT))
+                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT, meshIndexMapped_))
         return false;
     if (!meshVertexMapped_)
         vkMapMemory(device_, meshVertexMemory_, 0, meshVertexCapacity_, 0, (void**)&meshVertexMapped_);
@@ -1887,16 +2314,27 @@ void VulkanRenderBackend::DrawMesh(const float* vertices,
 {
     if (skipDraw_ || !currentTarget_ || !vertices || !indices || vertexCount <= 0 || indexCount <= 0)
         return;
-    Texture* texture = FindTexture(handle);
-    if (!texture)
-        return;
     if (!EnsureMeshResources())
         return;
+    Texture* texture = FindTexture(handle);
+    Target* targetAsTexture = texture ? nullptr : FindTarget(handle);
+    if (!texture && !targetAsTexture)
+        return;
+
+    // 写后读可见性：采样源（target 或纹理）在本 command buffer 内刚被写入时，
+    // 必须通过提交边界保证可见——RADV 会忽略 GENERAL→GENERAL 的 image barrier，
+    // 同提交内写后读结果未定义。这里每次新 pass 前统一提交（简单且正确：
+    // 每帧绘制次数有限，提交开销可接受）。
+    if (!passActive_)
+        FlushMeshCommands();
 
     if (!passActive_)
     {
         if (!BeginPass(currentTarget_, passClear_))
+        {
+            TVPConsoleLog("VK DrawMesh: BeginPass failed");
             return;
+        }
     }
 
     // 顶点/索引缓冲（主机可见，录制期间写入；提交发生在 LockTarget，串行安全）
@@ -1928,8 +2366,9 @@ void VulkanRenderBackend::DrawMesh(const float* vertices,
     vkCmdBindVertexBuffers(meshCommandBuffer_, 0, 1, &meshVertexBuffer_, &offset);
     vkCmdBindIndexBuffer(meshCommandBuffer_, meshIndexBuffer_, 0, VK_INDEX_TYPE_UINT16);
 
-    // 描述符：set0 = 纹理；set1 = 蒙版（无蒙版时用全白 1x1）
-    VkDescriptorSet sets[2] = {texture->set,
+    // 描述符：set0 = 纹理（或目标自身）；set1 = 蒙版（无蒙版时用全白 1x1）
+    VkDescriptorSet textureSet = texture ? texture->set : targetAsTexture->maskSet;
+    VkDescriptorSet sets[2] = {textureSet,
                                maskTarget_ ? maskTarget_->maskSet : blankMask_->set};
     vkCmdBindDescriptorSets(meshCommandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineLayout_, 0, 2,
                             sets, 0, nullptr);
@@ -1945,6 +2384,122 @@ void VulkanRenderBackend::DrawMesh(const float* vertices,
                        &pc);
 
     vkCmdDrawIndexed(meshCommandBuffer_, (uint32_t)indexCount, 1, 0, 0, 0);
+}
+
+//---------------------------------------------------------------------------
+// Layer 合成（图层合成路径，软件 RenderManager 语义）
+//---------------------------------------------------------------------------
+void VulkanRenderBackend::LayerSetBlend(int method, float opacity, const float* uniformColor)
+{
+    layerMethod_ = method;
+    layerOpa_ = opacity;
+    if (uniformColor)
+        std::memcpy(layerUniformColor_, uniformColor, sizeof(layerUniformColor_));
+}
+
+void VulkanRenderBackend::LayerDrawRect(void* handle,
+                                        float x,
+                                        float y,
+                                        float w,
+                                        float h,
+                                        float u0,
+                                        float v0,
+                                        float u1,
+                                        float v1)
+{
+    if (!currentTarget_ || !handle)
+        return;
+    if (!EnsureMeshResources() || !EnsureLayerPipelines())
+        return;
+    Texture* texture = FindTexture(handle);
+    Target* targetAsTexture = texture ? nullptr : FindTarget(handle);
+    if (!texture && !targetAsTexture)
+        return;
+
+    // 写后读可见性：采样源在本 command buffer 内刚被写入时跨提交边界保证可见
+    // （与 DrawMesh 相同策略：每次新 pass 前统一提交）
+    if (!passActive_)
+        FlushMeshCommands();
+    if (!passActive_)
+    {
+        if (!BeginPass(currentTarget_, passClear_))
+        {
+            TVPConsoleLog("VK LayerDrawRect: BeginPass failed");
+            return;
+        }
+    }
+
+    // 目标像素坐标 → NDC（与 DrawDeviceD3D 的 Layer 合成路径同一约定：
+    // 内容 y 向下，内容顶 t=0 → NDC -1；VK NDC y 向下使回读与 GL/SW 一致）
+    float tw = (float)currentTarget_->width, th = (float)currentTarget_->height;
+    float lndc = x / tw * 2.0f - 1.0f;
+    float tndc = y / th * 2.0f - 1.0f;
+    float rndc = (x + w) / tw * 2.0f - 1.0f;
+    float bndc = (y + h) / th * 2.0f - 1.0f;
+    float vertices[16] = {
+        lndc, tndc, u0, v0, //
+        rndc, tndc, u1, v0, //
+        rndc, bndc, u1, v1, //
+        lndc, bndc, u0, v1, //
+    };
+    uint16_t indices[6] = {0, 1, 2, 2, 3, 0};
+
+    size_t vertexBytes = sizeof(vertices);
+    size_t indexBytes = sizeof(indices);
+    if (!EnsureVertexBuffers(vertexBytes, indexBytes))
+        return;
+
+    // 方法 → 管线（与 EnsureLayerPipelines 的混合状态一一对应）
+    int pipelineIndex = 0;
+    switch (layerMethod_)
+    {
+        case iTVPRenderBackend::LBM_ALPHA:
+        case iTVPRenderBackend::LBM_CONSTALPHA:
+            pipelineIndex = 1;
+            break;
+        case iTVPRenderBackend::LBM_ADD:
+            pipelineIndex = 3;
+            break;
+        case iTVPRenderBackend::LBM_SUB:
+            pipelineIndex = 4;
+            break;
+        case iTVPRenderBackend::LBM_MUL:
+            pipelineIndex = 5;
+            break;
+        case iTVPRenderBackend::LBM_MUL_HDA:
+            pipelineIndex = 6;
+            break;
+        case iTVPRenderBackend::LBM_COPYCOLOR:
+            pipelineIndex = 7;
+            break;
+        case iTVPRenderBackend::LBM_COPYMASK:
+            pipelineIndex = 8;
+            break;
+        default: // LBM_COPY / LBM_FILL / LBM_COPYOPAQUE
+            pipelineIndex = 0;
+            break;
+    }
+    vkCmdBindPipeline(meshCommandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, layerPipelines_[pipelineIndex]);
+
+    std::memcpy(meshVertexMapped_, vertices, vertexBytes);
+    std::memcpy(meshIndexMapped_, indices, indexBytes);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(meshCommandBuffer_, 0, 1, &meshVertexBuffer_, &offset);
+    vkCmdBindIndexBuffer(meshCommandBuffer_, meshIndexBuffer_, 0, VK_INDEX_TYPE_UINT16);
+
+    VkDescriptorSet textureSet = texture ? texture->set : targetAsTexture->maskSet;
+    vkCmdBindDescriptorSets(meshCommandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, layerPipelineLayout_, 0, 1,
+                            &textureSet, 0, nullptr);
+
+    LayerPushConstants pc{};
+    std::memcpy(pc.uniformColor, layerUniformColor_, sizeof(layerUniformColor_));
+    pc.opa = layerOpa_;
+    pc.method = layerMethod_;
+    vkCmdPushConstants(meshCommandBuffer_, layerPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(pc), &pc);
+
+    vkCmdDrawIndexed(meshCommandBuffer_, 6, 1, 0, 0, 0);
 }
 
 //---------------------------------------------------------------------------
@@ -2004,7 +2559,10 @@ uint8_t* VulkanRenderBackend::LockTarget(void* handle, int& pitch)
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &meshCommandBuffer_;
     if (!CheckVkResult(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, meshFence_), "QueueSubmit"))
+    {
+        vkQueueSubmit(graphicsQueue_, 0, nullptr, meshFence_); // 重新置位栅栏，避免后续等待悬挂
         return nullptr;
+    }
     vkWaitForFences(device_, 1, &meshFence_, VK_TRUE, UINT64_MAX);
 
     pitch = target->width * 4;
@@ -2014,6 +2572,92 @@ uint8_t* VulkanRenderBackend::LockTarget(void* handle, int& pitch)
 void VulkanRenderBackend::UnlockTarget(void* handle)
 {
     (void)handle;
+}
+
+void* VulkanRenderBackend::GetTargetTexture(void* handle)
+{
+    // 返回 set0 布局的采样包装（DrawMesh / DrawWindowTexture 按 Texture* 句柄查找）
+    Target* target = FindTarget(handle);
+    return target ? target->texture : nullptr;
+}
+
+void VulkanRenderBackend::UpdateTargetTexture(void* handle,
+                                              const uint8_t* pixels,
+                                              int width,
+                                              int height,
+                                              int pitch)
+{
+    Target* target = FindTarget(handle);
+    if (!target || !pixels)
+        return;
+    size_t bytes = (size_t)width * height * 4;
+
+    // 目标图像是设备本地内存：经 staging buffer + vkCmdCopyBufferToImage 上传
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bytes;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (!CheckVkResult(vkCreateBuffer(device_, &bufferInfo, nullptr, &staging), "CreateUploadStaging"))
+        return;
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(device_, staging, &memReq);
+    uint32_t memoryType = FindHostVisibleMemory(physicalDevice_, memReq, true);
+    if (memoryType == 0xFFFFFFFF)
+    {
+        vkDestroyBuffer(device_, staging, nullptr);
+        return;
+    }
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = memoryType;
+    if (!CheckVkResult(vkAllocateMemory(device_, &allocInfo, nullptr, &stagingMem), "AllocateUploadStaging"))
+    {
+        vkDestroyBuffer(device_, staging, nullptr);
+        return;
+    }
+    vkBindBufferMemory(device_, staging, stagingMem, 0);
+    void* mapped = nullptr;
+    vkMapMemory(device_, stagingMem, 0, memReq.size, 0, &mapped);
+    for (int y = 0; y < height; y++)
+        std::memcpy((uint8_t*)mapped + (size_t)y * width * 4, pixels + (size_t)y * pitch,
+                    (size_t)width * 4);
+    vkUnmapMemory(device_, stagingMem);
+
+    VkCommandBufferAllocateInfo cmdAlloc{};
+    cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAlloc.commandPool = commandPool_;
+    cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAlloc.commandBufferCount = 1;
+    VkCommandBuffer cmd;
+    if (!CheckVkResult(vkAllocateCommandBuffers(device_, &cmdAlloc, &cmd), "AllocateUploadCmd"))
+    {
+        vkFreeMemory(device_, stagingMem, nullptr);
+        vkDestroyBuffer(device_, staging, nullptr);
+        return;
+    }
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
+    vkCmdCopyBufferToImage(cmd, staging, target->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue_);
+    vkFreeCommandBuffers(device_, commandPool_, 1, &cmd);
+    vkFreeMemory(device_, stagingMem, nullptr);
+    vkDestroyBuffer(device_, staging, nullptr);
 }
 
 //---------------------------------------------------------------------------
@@ -2098,6 +2742,17 @@ void VulkanRenderBackend::Shutdown()
         if (meshPipelineLayout_)
             vkDestroyPipelineLayout(device_, meshPipelineLayout_, nullptr);
         meshPipelineLayout_ = VK_NULL_HANDLE;
+        // Layer 合成管线
+        for (int i = 0; i < 9; i++)
+        {
+            if (layerPipelines_[i])
+                vkDestroyPipeline(device_, layerPipelines_[i], nullptr);
+            layerPipelines_[i] = VK_NULL_HANDLE;
+        }
+        if (layerPipelineLayout_)
+            vkDestroyPipelineLayout(device_, layerPipelineLayout_, nullptr);
+        layerPipelineLayout_ = VK_NULL_HANDLE;
+        layerReady_ = false;
         if (meshLoadPass_)
             vkDestroyRenderPass(device_, meshLoadPass_, nullptr);
         if (meshClearPass_)

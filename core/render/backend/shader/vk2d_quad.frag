@@ -4,11 +4,12 @@ layout(location = 0) out vec4 FragColor;
 layout(set = 0, binding = 0) uniform sampler2D texture1;
 layout(set = 1, binding = 0) uniform sampler2D maskTexture;
 layout(push_constant) uniform PushConstants {
-    vec2 viewport;    // 蒙版 UV 归一化用
-    float enableMask; // 0.0/1.0
-    float enableColor;// 0.0/1.0
-    float opa;
-    vec4 uniformColor;
+    vec2 viewport;     // 0: 蒙版 UV 归一化用
+    float enableMask;  // 8
+    float enableColor; // 12
+    float opa;         // 16
+    float pad;         // 20
+    vec4 uniformColor; // 24（std140 16 字节对齐）
 } pc;
 void main()
 {

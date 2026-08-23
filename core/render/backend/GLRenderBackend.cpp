@@ -193,6 +193,74 @@ const char* kMeshFragmentShaderSrc = R"(#version 100
         )";
 #endif
 
+//---------------------------------------------------------------------------
+// Layer 合成 shader（330 core / 100 es）
+// 混合状态由 LayerSetBlend 设置；本 shader 只负责按方法变换采样颜色：
+//   LBM_ALPHA/CONSTALPHA：alpha 通道按软件 (x * opa8) >> 8 语义折算
+//     （×255/256 模拟 >>8 的截断），作为 SRC_ALPHA 混合因子
+//   LBM_ADD：RGB 按 opa 缩放（alpha 通道置 0 → 饱和加不影响目标 alpha）
+//   LBM_SUB/MUL：RGB = 1-(1-src)*opa（软件 255-(255-src)*opa8>>8 语义）
+//   LBM_FILL：直接输出 uniformColor
+//---------------------------------------------------------------------------
+#if defined(_KRKRSDL3_GL) && _KRKRSDL3_GL
+const char* kLayerFragmentShaderSrc = R"(
+            #version 330 core
+            out vec4 FragColor;
+            in vec2 texCoord;
+            uniform sampler2D texture1;
+            uniform int method;
+            uniform float opa;
+            uniform vec4 uniformColor;
+            void main()
+            {
+                vec4 c = texture(texture1, texCoord);
+                if (method == 7) {
+                    c = uniformColor;
+                } else if (method == 2) {
+                    c.a = floor(opa * 255.0 * (255.0 / 256.0)) / 255.0;
+                } else if (method == 1) {
+                    c.a = floor(c.a * opa * 255.0 * (255.0 / 256.0)) / 255.0;
+                } else if (method == 3) {
+                    c.rgb = c.rgb * opa * (255.0 / 256.0);
+                    c.a = 0.0;
+                } else if (method == 4 || method == 5 || method == 6) {
+                    c.rgb = 1.0 - (1.0 - c.rgb) * opa * (255.0 / 256.0);
+                } else if (method == 9) {
+                    c.a = 1.0;
+                }
+                FragColor = c;
+            }
+        )";
+#else
+const char* kLayerFragmentShaderSrc = R"(#version 100
+            precision mediump float;
+            varying vec2 texCoord;
+            uniform sampler2D texture1;
+            uniform int method;
+            uniform float opa;
+            uniform vec4 uniformColor;
+            void main()
+            {
+                vec4 c = texture2D(texture1, texCoord);
+                if (method == 7) {
+                    c = uniformColor;
+                } else if (method == 2) {
+                    c.a = floor(opa * 255.0 * (255.0 / 256.0)) / 255.0;
+                } else if (method == 1) {
+                    c.a = floor(c.a * opa * 255.0 * (255.0 / 256.0)) / 255.0;
+                } else if (method == 3) {
+                    c.rgb = c.rgb * opa * (255.0 / 256.0);
+                    c.a = 0.0;
+                } else if (method == 4 || method == 5 || method == 6) {
+                    c.rgb = 1.0 - (1.0 - c.rgb) * opa * (255.0 / 256.0);
+                } else if (method == 9) {
+                    c.a = 1.0;
+                }
+                gl_FragColor = c;
+            }
+        )";
+#endif
+
 namespace
 {
 unsigned int CompileShader(unsigned int type, const char* src)
@@ -231,6 +299,12 @@ GLRenderBackend::~GLRenderBackend()
         glDeleteBuffers(1, &vbo_);
         glDeleteBuffers(1, &ibo_);
         program_ = vao_ = vbo_ = ibo_ = 0;
+    }
+    // Layer 合成资源
+    if (programLayer_)
+    {
+        glDeleteProgram(programLayer_);
+        programLayer_ = 0;
     }
     // 目标（FBO）
     for (Target* t : targets_)
@@ -465,6 +539,40 @@ bool GLRenderBackend::EnsureMeshProgram()
 }
 
 //---------------------------------------------------------------------------
+// Layer 合成 shader program（复用网格路径的 VAO/VBO/IBO 与顶点属性）
+//---------------------------------------------------------------------------
+bool GLRenderBackend::EnsureLayerProgram()
+{
+    if (programLayer_ != 0 && glIsProgram(programLayer_) == GL_TRUE)
+        return true;
+
+    unsigned int vs = CompileShader(GL_VERTEX_SHADER, kMeshVertexShaderSrc);
+    unsigned int fs = CompileShader(GL_FRAGMENT_SHADER, kLayerFragmentShaderSrc);
+    unsigned int prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    int success = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &success);
+    if (!success)
+    {
+        char log[512];
+        glGetProgramInfoLog(prog, 512, nullptr, log);
+        TVPConsoleLog("GLRenderBackend layer program link error: %s", log);
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    locLayerTexture_ = glGetUniformLocation(prog, "texture1");
+    locLayerMethod_ = glGetUniformLocation(prog, "method");
+    locLayerOpa_ = glGetUniformLocation(prog, "opa");
+    locLayerUniformColor_ = glGetUniformLocation(prog, "uniformColor");
+
+    programLayer_ = prog;
+    return true;
+}
+
+//---------------------------------------------------------------------------
 // 目标（FBO）
 //---------------------------------------------------------------------------
 void* GLRenderBackend::CreateTarget(int width, int height)
@@ -485,6 +593,13 @@ void* GLRenderBackend::CreateTarget(int width, int height)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // 颜色纹理的采样包装（DrawWindowTexture/DrawMesh 按 Texture* 句柄查找）
+    target->texture = new Texture();
+    target->texture->id = target->colorTex;
+    target->texture->width = width;
+    target->texture->height = height;
+    textures_.push_back(target->texture);
 
     // 深度纹理
     glGenTextures(1, &target->depthTex);
@@ -530,6 +645,18 @@ void GLRenderBackend::DestroyTarget(void* handle)
     glDeleteFramebuffers(1, &target->fbo);
     glDeleteTextures(1, &target->colorTex);
     glDeleteTextures(1, &target->depthTex);
+    if (target->texture)
+    {
+        for (size_t i = 0; i < textures_.size(); i++)
+        {
+            if (textures_[i] == target->texture)
+            {
+                textures_.erase(textures_.begin() + i);
+                break;
+            }
+        }
+        delete target->texture;
+    }
     delete target;
 }
 
@@ -584,6 +711,32 @@ uint8_t* GLRenderBackend::LockTarget(void* handle, int& pitch)
 void GLRenderBackend::UnlockTarget(void* handle)
 {
     (void)handle;
+}
+
+void* GLRenderBackend::GetTargetTexture(void* handle)
+{
+    Target* target = FindTarget(handle);
+    if (!target)
+        return nullptr;
+    // 目标的颜色纹理可直接作为采样源（返回 Texture*，与 DrawMesh/DrawWindowTexture 的句柄匹配）
+    return target->texture;
+}
+
+void GLRenderBackend::UpdateTargetTexture(void* handle,
+                                          const uint8_t* pixels,
+                                          int width,
+                                          int height,
+                                          int pitch)
+{
+    Target* target = FindTarget(handle);
+    if (!target || !pixels)
+        return;
+    glBindTexture(GL_TEXTURE_2D, target->colorTex);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 }
 
 //---------------------------------------------------------------------------
@@ -658,6 +811,7 @@ void GLRenderBackend::SetBlendMode(int mode, const float* uniformColor)
     }
     if (skipDraw_)
         return;
+    glEnable(GL_BLEND);
     switch (mode)
     {
         case 0:
@@ -672,8 +826,10 @@ void GLRenderBackend::SetBlendMode(int mode, const float* uniformColor)
             glBlendEquation(GL_FUNC_ADD);
             break;
         case 21:
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glBlendEquation(GL_FUNC_ADD);
+            // FillARGB/FillColor/FillMask：软件语义为覆盖写（无视 alpha 混合）。
+            // 若用 alpha 混合，透明色填充（如 0x00FFFFFF 中性色）无法覆盖旧内容，
+            // 会把图层白底留在目标上。
+            glDisable(GL_BLEND);
             break;
     }
 }
@@ -747,6 +903,156 @@ void GLRenderBackend::DrawMesh(const float* vertices,
         glUniform1i(locMask_, 1);
     }
     glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_SHORT, 0);
+}
+
+//---------------------------------------------------------------------------
+// Layer 合成（图层合成路径，软件 RenderManager 语义）
+//---------------------------------------------------------------------------
+void GLRenderBackend::LayerSetBlend(int method, float opacity, const float* uniformColor)
+{
+    layerMethod_ = method;
+    layerOpa_ = opacity;
+    if (uniformColor)
+        std::memcpy(layerUniformColor_, uniformColor, sizeof(layerUniformColor_));
+
+    // 各方法对应的固定函数混合状态（与软件 RenderManager bm* 语义一致）：
+    glBlendEquation(GL_FUNC_ADD);
+    switch (method)
+    {
+        case iTVPRenderBackend::LBM_COPY:
+        case iTVPRenderBackend::LBM_FILL:
+        case iTVPRenderBackend::LBM_COPYOPAQUE:
+            // 直写（覆盖）
+            glDisable(GL_BLEND);
+            break;
+        case iTVPRenderBackend::LBM_ALPHA:
+        case iTVPRenderBackend::LBM_CONSTALPHA:
+            // dest = src*f + dest*(1-f)，f 由 shader 折算后的 alpha 通道给出（全通道）
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA,
+                                GL_ONE_MINUS_SRC_ALPHA);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        case iTVPRenderBackend::LBM_ADD:
+            // 饱和加（含 alpha 通道由 shader 置 0 保证目标 alpha 不变）
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        case iTVPRenderBackend::LBM_SUB:
+            // 饱和减（REVERSE_SUBTRACT：dst - src，输出钳制到 [0,1]）
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+            break;
+        case iTVPRenderBackend::LBM_MUL:
+            // dest.rgb *= src.rgb；alpha 清 0（软件 MulBlend 语义）
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ZERO);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        case iTVPRenderBackend::LBM_MUL_HDA:
+            // dest.rgb *= src.rgb；alpha 保留（MulBlend_HDA）
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ONE, GL_ZERO);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        case iTVPRenderBackend::LBM_COPYCOLOR:
+            // dest = (dest & A) | (src & RGB)
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_ONE, GL_ZERO, GL_ZERO, GL_ONE);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        case iTVPRenderBackend::LBM_COPYMASK:
+            // dest = (dest & RGB) | (src & A)
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_ZERO, GL_ONE, GL_ONE, GL_ZERO);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+        default:
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA,
+                                GL_ONE_MINUS_SRC_ALPHA);
+            glBlendEquation(GL_FUNC_ADD);
+            break;
+    }
+}
+
+void GLRenderBackend::LayerDrawRect(void* handle,
+                                    float x,
+                                    float y,
+                                    float w,
+                                    float h,
+                                    float u0,
+                                    float v0,
+                                    float u1,
+                                    float v1)
+{
+    if (!currentTarget_ || !handle)
+        return;
+    Texture* texture = FindTexture(handle);
+    if (!texture)
+        return;
+    if (!EnsureLayerProgram())
+        return;
+
+    // 目标像素坐标 → NDC（与 DrawDeviceD3D 的 Layer 合成路径同一约定：
+    // 内容 y 向下，内容顶 t=0 → NDC -1；GL 的 FBO 行序使回读与 VK/SW 一致）
+    float tw = (float)currentTarget_->width, th = (float)currentTarget_->height;
+    float lndc = x / tw * 2.0f - 1.0f;
+    float tndc = y / th * 2.0f - 1.0f;
+    float rndc = (x + w) / tw * 2.0f - 1.0f;
+    float bndc = (y + h) / th * 2.0f - 1.0f;
+    float v[16] = {
+        lndc, tndc, u0, v0, //
+        rndc, tndc, u1, v0, //
+        rndc, bndc, u1, v1, //
+        lndc, bndc, u0, v1, //
+    };
+    uint16_t idx[] = {0, 1, 2, 2, 3, 0};
+
+    // VBO/IBO（与 DrawMesh 共用同一缓冲，按需增长）
+    size_t vertexBytes = sizeof(v);
+    size_t indexBytes = sizeof(idx);
+    if (vbo_ == 0)
+        glGenBuffers(1, &vbo_);
+    if (ibo_ == 0)
+        glGenBuffers(1, &ibo_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    if (vertexBytes > vboSize_)
+    {
+        glBufferData(GL_ARRAY_BUFFER, vertexBytes, v, GL_DYNAMIC_DRAW);
+        vboSize_ = vertexBytes;
+    }
+    else
+    {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertexBytes, v);
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
+    if (indexBytes > iboSize_)
+    {
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexBytes, idx, GL_STATIC_DRAW);
+        iboSize_ = indexBytes;
+    }
+    else
+    {
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indexBytes, idx);
+    }
+
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUseProgram(programLayer_);
+    glUniform1i(locLayerMethod_, layerMethod_);
+    glUniform1f(locLayerOpa_, layerOpa_);
+    glUniform4f(locLayerUniformColor_, layerUniformColor_[0], layerUniformColor_[1],
+                layerUniformColor_[2], layerUniformColor_[3]);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture->id);
+    glUniform1i(locLayerTexture_, 0);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
 }
 
 // 兼容保留：历史接口（当前无外部调用者），供扩展检查使用

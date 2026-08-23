@@ -46,6 +46,8 @@ public:
     void ClearTarget(bool clearColor) override;
     uint8_t* LockTarget(void* target, int& pitch) override;
     void UnlockTarget(void* target) override;
+    void* GetTargetTexture(void* target) override;
+    void UpdateTargetTexture(void* target, const uint8_t* pixels, int width, int height, int pitch) override;
     void* CreateTexture(int width, int height) override;
     void UpdateTexture(void* texture, const uint8_t* pixels, int width, int height, int pitch) override;
     void DestroyTexture(void* texture) override;
@@ -57,6 +59,18 @@ public:
                   int indexCount,
                   void* texture,
                   float opacity) override;
+
+    // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
+    void LayerSetBlend(int method, float opacity, const float* uniformColor) override;
+    void LayerDrawRect(void* texture,
+                       float x,
+                       float y,
+                       float w,
+                       float h,
+                       float u0,
+                       float v0,
+                       float u1,
+                       float v1) override;
 
 private:
     struct Target
@@ -78,6 +92,9 @@ private:
     int blendMode_ = 0;
     bool skipDraw_ = false;
     float uniformColor_[4] = {0, 0, 0, 0};
+    int layerMethod_ = 0;    // LayerBlendMethod
+    int layerOpa8_ = 255;    // 0..255（软件 opacity 参数）
+    float layerColor_[4] = {0, 0, 0, 0};
     std::vector<Target*> targets_;
     std::vector<Texture*> textures_;
 };

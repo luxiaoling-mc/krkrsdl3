@@ -78,6 +78,18 @@ public:
     // 回读 CPU 像素（调用期间像素有效，Unlock 后失效）
     virtual uint8_t* LockTarget(void* target, int& pitch) = 0;
     virtual void UnlockTarget(void* target) = 0;
+    // 目标作为可采样纹理使用（GPU 纹理可直接作为绘制目标；返回的句柄
+    // 可传给 DrawMesh 的 texture 参数与 SetMask）。GL 返回 FBO 颜色纹理，
+    // Vulkan 返回目标自身（其图像视图），软渲染返回目标自身（其缓冲）。
+    virtual void* GetTargetTexture(void* target) = 0;
+    // 直接更新目标内容（整幅上传；用于 GPU 纹理的像素上传）。
+    // GL 走 glTexSubImage2D，Vulkan 走 staging buffer + copy，
+    // 软渲染直接写缓冲。调用后目标内容立即可作为采样/回读源。
+    virtual void UpdateTargetTexture(void* target,
+                                     const uint8_t* pixels,
+                                     int width,
+                                     int height,
+                                     int pitch) = 0;
 
     // 一般贴图（SW=CPU buffer；GPU=与窗口贴图同一实现）
     virtual void* CreateTexture(int width, int height) = 0;
@@ -96,6 +108,41 @@ public:
                           int indexCount,
                           void* texture,
                           float opacity) = 0;
+
+    // ---- Layer 合成（图层合成路径，供 DrawDeviceD3D 的 GPU RenderManager 使用）----
+    // 与 2D 网格（DrawMesh，emoteplayer 用）的区别：混合公式遵循软件 RenderManager
+    // （gl/tvpgl.cpp 的 bm* 方法语义），而非 emoteplayer 的混合约定。GL/VK/SW
+    // 三个后端实现与软件合成保持一致（允许 ±1 舍入误差）。
+    //
+    // opacity 为 0..1 的浮点（对应软件方法 0..255 的 opacity 参数，后端内部换算）。
+    enum LayerBlendMethod
+    {
+        LBM_COPY = 0,       // dest = src（直写，含 alpha）
+        LBM_ALPHA = 1,      // dest = dest + (src - dest) * ((src.a * opa8) >> 8) >> 8（全通道）
+        LBM_CONSTALPHA = 2, // dest = dest + (src - dest) * opa8 >> 8（源视为不透明）
+        LBM_ADD = 3,        // dest = sat(dest + s)；s.RGB = src.RGB * opa8 >> 8，s.A = 0
+        LBM_SUB = 4,        // dest = sat(dest - s)；s.RGB = 255-(255-src.RGB)*opa8>>8，s.A = src.A
+        LBM_MUL = 5,        // dest.RGB = dest.RGB * s.RGB >> 8（s 同 SUB），dest.A = 0
+        LBM_MUL_HDA = 6,    // 同 LBM_MUL，dest.A 保留
+        LBM_FILL = 7,       // dest = uniformColor（直写，含 alpha；opacity 忽略）
+        LBM_COPYCOLOR = 8,  // dest = (dest & 0xff000000) | (src & 0x00ffffff)
+        LBM_COPYOPAQUE = 9, // dest = src | 0xff000000
+        LBM_COPYMASK = 10,  // dest = (dest & 0x00ffffff) | (src & 0xff000000)
+    };
+    // 设置图层合成混合状态（作用于当前目标；uniformColor 仅 LBM_FILL 使用）
+    virtual void LayerSetBlend(int method, float opacity, const float* uniformColor = nullptr) = 0;
+    // 在当前目标上绘制源贴图矩形（目标像素坐标；uv0/uv1 为归一化源矩形）。
+    // 坐标约定与 DrawDeviceD3D 的合成路径一致：内容 y 向下，内容顶(t=0)
+    // 映射到 NDC -1（GL/VK/SW 三后端回读结果一致）。
+    virtual void LayerDrawRect(void* texture,
+                               float x,
+                               float y,
+                               float w,
+                               float h,
+                               float u0 = 0.0f,
+                               float v0 = 0.0f,
+                               float u1 = 1.0f,
+                               float v1 = 1.0f) = 0;
 
     // 后端信息采集（GL 的厂商/版本/扩展日志等），无操作默认实现
     virtual void FetchInfo() {}

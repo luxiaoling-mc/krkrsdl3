@@ -8,6 +8,7 @@
 #include "emoterunner.h"
 
 #include "tjsNativeLayer.h"
+#include "TVPCompositor.h" // krkrsdl3::iTVPRenderBackend
 
 namespace emoteplayer
 {
@@ -165,6 +166,21 @@ public:
     void pass();
     void stop();
 
+    // GPU 直通绘制：把动画网格直接绘制到给定后端离屏目标（不经引擎 Layer、无 CPU 回读）。
+    // 供 DrawDeviceD3D 的 D3DEmotePlayer 使用；renderer/target/maskTarget 来自渲染后端抽象。
+    // GPU 直通绘制：width/height 为绘制区域（limit），originX/originY 为区域原点
+    //（该区域在 progress()/updateTransMat() 中被依赖；软渲染路径由
+    // ResetDrawArea() 初始化，直通路径必须显式传入）。
+    // 直通路径的兼容约定：D3D 用 dx_ 模型，画布 y 自底向上锚定
+    //（originY = canvasH - screenH），与软渲染 e- 模型（自上而下）不同。
+    void drawToTarget(krkrsdl3::iTVPRenderBackend* renderer,
+                      void* target,
+                      void* maskTarget,
+                      bool selfClear,
+                      tjs_int width = 0,
+                      tjs_int height = 0,
+                      tjs_int originX = 0,
+                      tjs_int originY = 0);
     void playTimeline(tTJSString name, tjs_int flags = 0);
     void stopTimeline(tTJSString name = "");
     bool getTimelinePlaying(tTJSString name = "");

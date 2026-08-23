@@ -115,6 +115,81 @@ static ColorRGBA BlendPixels(ColorRGBA src,
 
     return {Clampf(outR * 255), Clampf(outG * 255), Clampf(outB * 255), Clampf(outA * 255)};
 }
+
+//---------------------------------------------------------------------------
+// Layer 合成：软件 RenderManager（tvpgl.cpp bm* 方法）精确语义
+//---------------------------------------------------------------------------
+static inline uint8_t Sat8(int v)
+{
+    return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+}
+
+// tvpgl 的 alpha 混合核心：dest = dest + (src - dest) * opa >> 8（opa 0..255）
+static inline int Lerp8(int dst, int src, int opa)
+{
+    return dst + ((src - dst) * opa >> 8);
+}
+
+// 单像素混合。字节序与后端缓冲一致：0=R, 1=G, 2=B, 3=A。
+// 公式与 tvpgl.cpp 的 _o 变体（RenderManager 实际使用的带 opacity 方法）一致。
+static uint32_t LayerBlendPixel(int method, uint32_t src, uint32_t dst, int opa8, uint32_t color)
+{
+    int sr = (int)(src & 0xFF), sg = (int)((src >> 8) & 0xFF), sb = (int)((src >> 16) & 0xFF),
+        sa = (int)((src >> 24) & 0xFF);
+    int dr = (int)(dst & 0xFF), dg = (int)((dst >> 8) & 0xFF), db = (int)((dst >> 16) & 0xFF),
+        da = (int)((dst >> 24) & 0xFF);
+
+    switch (method)
+    {
+        case iTVPRenderBackend::LBM_COPY:
+            return src;
+        case iTVPRenderBackend::LBM_ALPHA:
+        {
+            int sopa = (sa * opa8) >> 8;
+            return (uint32_t)Lerp8(dr, sr, sopa) | (uint32_t)Lerp8(dg, sg, sopa) << 8 |
+                   (uint32_t)Lerp8(db, sb, sopa) << 16 | (uint32_t)Lerp8(da, sa, sopa) << 24;
+        }
+        case iTVPRenderBackend::LBM_CONSTALPHA:
+            return (uint32_t)Lerp8(dr, sr, opa8) | (uint32_t)Lerp8(dg, sg, opa8) << 8 |
+                   (uint32_t)Lerp8(db, sb, opa8) << 16 | (uint32_t)Lerp8(da, sa, opa8) << 24;
+        case iTVPRenderBackend::LBM_ADD:
+        {
+            // 软件 AddBlend_o：仅 RGB 按 opa8 缩放后饱和加，alpha 不变
+            int s_r = (sr * opa8) >> 8, s_g = (sg * opa8) >> 8, s_b = (sb * opa8) >> 8;
+            return (uint32_t)Sat8(dr + s_r) | (uint32_t)Sat8(dg + s_g) << 8 |
+                   (uint32_t)Sat8(db + s_b) << 16 | (uint32_t)da << 24;
+        }
+        case iTVPRenderBackend::LBM_SUB:
+        {
+            // 软件 SubBlend_o：s.RGB = 255-(255-src.RGB)*opa8>>8，s.A = src.A（不缩放）
+            int s_r = 255 - ((255 - sr) * opa8 >> 8), s_g = 255 - ((255 - sg) * opa8 >> 8),
+                s_b = 255 - ((255 - sb) * opa8 >> 8);
+            return (uint32_t)Sat8(dr - s_r) | (uint32_t)Sat8(dg - s_g) << 8 |
+                   (uint32_t)Sat8(db - s_b) << 16 | (uint32_t)Sat8(da - sa) << 24;
+        }
+        case iTVPRenderBackend::LBM_MUL:
+        case iTVPRenderBackend::LBM_MUL_HDA:
+        {
+            int s_r = 255 - ((255 - sr) * opa8 >> 8), s_g = 255 - ((255 - sg) * opa8 >> 8),
+                s_b = 255 - ((255 - sb) * opa8 >> 8);
+            uint32_t rgb = (uint32_t)((dr * s_r) >> 8) | (uint32_t)((dg * s_g) >> 8) << 8 |
+                           (uint32_t)((db * s_b) >> 8) << 16;
+            if (method == iTVPRenderBackend::LBM_MUL_HDA)
+                return rgb | (uint32_t)da << 24; // MulBlend_HDA：alpha 保留
+            return rgb;                          // MulBlend：alpha 清 0
+        }
+        case iTVPRenderBackend::LBM_FILL:
+            return color;
+        case iTVPRenderBackend::LBM_COPYCOLOR:
+            return (dst & 0xff000000) | (src & 0x00ffffff); // CopyColor：RGB 复制，alpha 保留
+        case iTVPRenderBackend::LBM_COPYOPAQUE:
+            return src | 0xff000000; // CopyOpaqueImage：RGB 复制，alpha 置 255
+        case iTVPRenderBackend::LBM_COPYMASK:
+            return (dst & 0x00ffffff) | (src & 0xff000000); // CopyMask：alpha 复制
+        default:
+            return src;
+    }
+}
 } // namespace
 
 //---------------------------------------------------------------------------
@@ -252,6 +327,28 @@ void SWRenderBackend::UnlockTarget(void* handle)
     (void)handle;
 }
 
+void* SWRenderBackend::GetTargetTexture(void* handle)
+{
+    // 软渲染目标即 CPU 缓冲；返回目标自身，DrawMesh 支持目标句柄作为纹理
+    return FindTarget(handle) ? handle : nullptr;
+}
+
+void SWRenderBackend::UpdateTargetTexture(void* handle,
+                                          const uint8_t* pixels,
+                                          int width,
+                                          int height,
+                                          int pitch)
+{
+    Target* target = FindTarget(handle);
+    if (!target || !pixels)
+        return;
+    for (int y = 0; y < height; y++)
+    {
+        std::memcpy(target->pixels.data() + (size_t)y * target->width * 4,
+                    pixels + (size_t)y * pitch, (size_t)width * 4);
+    }
+}
+
 //---------------------------------------------------------------------------
 // 一般贴图：内部持有 CPU 像素副本
 //---------------------------------------------------------------------------
@@ -326,16 +423,22 @@ void SWRenderBackend::DrawMesh(const float* vertices,
 {
     if (skipDraw_ || !currentTarget_ || !vertices || !indices || vertexCount <= 0 || indexCount <= 0)
         return;
+    // 纹理句柄可以是普通纹理，也可以是离屏目标（其缓冲直接作为采样源）
     Texture* texture = FindTexture(handle);
-    if (!texture || texture->pixels.empty())
+    Target* targetAsTexture = texture ? nullptr : FindTarget(handle);
+    if (!texture && !targetAsTexture)
         return;
 
     const int width = currentTarget_->width;
     const int height = currentTarget_->height;
     uint32_t* dst = (uint32_t*)currentTarget_->pixels.data();
     const uint32_t* maskRowBase = maskTarget_ ? (uint32_t*)maskTarget_->pixels.data() : nullptr;
-    const ColorRGBA* texData = (const ColorRGBA*)texture->pixels.data();
-    const int texW = texture->width, texH = texture->height;
+    const ColorRGBA* texData = (const ColorRGBA*)(texture ? texture->pixels.data()
+                                                          : targetAsTexture->pixels.data());
+    const int texW = texture ? texture->width : targetAsTexture->width;
+    const int texH = texture ? texture->height : targetAsTexture->height;
+    if (!texData)
+        return;
     const bool hasStencil = (maskRowBase != nullptr);
     const int pitch = width;
 
@@ -441,6 +544,103 @@ void SWRenderBackend::DrawMesh(const float* vertices,
             f20 += df20_dy;
             tu0 += du_dy;
             tv0 += dv_dy;
+        }
+    }
+}
+
+//---------------------------------------------------------------------------
+// Layer 合成（图层合成路径，软件 RenderManager 语义）
+//---------------------------------------------------------------------------
+void SWRenderBackend::LayerSetBlend(int method, float opacity, const float* uniformColor)
+{
+    layerMethod_ = method;
+    // 软件方法 opacity 参数为 0..255：浮点 0..1 圆整回 0..255
+    int opa8 = (int)(opacity * 255.0f + 0.5f);
+    if (opa8 < 0)
+        opa8 = 0;
+    if (opa8 > 255)
+        opa8 = 255;
+    layerOpa8_ = opa8;
+    if (uniformColor)
+    {
+        layerColor_[0] = uniformColor[0];
+        layerColor_[1] = uniformColor[1];
+        layerColor_[2] = uniformColor[2];
+        layerColor_[3] = uniformColor[3];
+    }
+}
+
+void SWRenderBackend::LayerDrawRect(void* handle,
+                                    float x,
+                                    float y,
+                                    float w,
+                                    float h,
+                                    float u0,
+                                    float v0,
+                                    float u1,
+                                    float v1)
+{
+    if (!currentTarget_ || w <= 0.0f || h <= 0.0f)
+        return;
+    // 纹理句柄可以是普通纹理，也可以是离屏目标（其缓冲直接作为采样源）
+    Texture* texture = FindTexture(handle);
+    Target* targetAsTexture = texture ? nullptr : FindTarget(handle);
+    if (!texture && !targetAsTexture)
+        return;
+
+    const uint32_t* texData = (const uint32_t*)(texture ? texture->pixels.data()
+                                                        : targetAsTexture->pixels.data());
+    const int texW = texture ? texture->width : targetAsTexture->width;
+    const int texH = texture ? texture->height : targetAsTexture->height;
+    if (!texData || texW <= 0 || texH <= 0)
+        return;
+
+    const int width = currentTarget_->width;
+    const int height = currentTarget_->height;
+    uint32_t* dst = (uint32_t*)currentTarget_->pixels.data();
+
+    // 目标矩形（与软件 RenderManager 的 OperateRect 一样逐像素处理）
+    int x0 = (int)std::floor(x);
+    int y0 = (int)std::floor(y);
+    int x1 = (int)std::ceil(x + w);
+    int y1 = (int)std::ceil(y + h);
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > width)
+        x1 = width;
+    if (y1 > height)
+        y1 = height;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+
+    // 采样：texel 中心映射（与 DrawMesh 的 (int)(tu * texW_1 + 0.5f) 一致）
+    const int texW_1 = texW - 1, texH_1 = texH - 1;
+    const uint32_t fillColor = ((uint32_t)(layerColor_[3] * 255.0f + 0.5f) << 24) |
+                               ((uint32_t)(layerColor_[2] * 255.0f + 0.5f) << 16) |
+                               ((uint32_t)(layerColor_[1] * 255.0f + 0.5f) << 8) |
+                               ((uint32_t)(layerColor_[0] * 255.0f + 0.5f));
+
+    for (int py = y0; py < y1; py++)
+    {
+        float ty = ((float)py - y + 0.5f) / h;
+        int sy = (int)((v0 + (v1 - v0) * ty) * texH_1 + 0.5f);
+        if (sy < 0)
+            sy = 0;
+        else if (sy > texH_1)
+            sy = texH_1;
+        uint32_t* row = dst + (size_t)py * width;
+        const uint32_t* texRow = texData + (size_t)sy * texW;
+        for (int px = x0; px < x1; px++)
+        {
+            float tx = ((float)px - x + 0.5f) / w;
+            int sx = (int)((u0 + (u1 - u0) * tx) * texW_1 + 0.5f);
+            if (sx < 0)
+                sx = 0;
+            else if (sx > texW_1)
+                sx = texW_1;
+            row[px] = LayerBlendPixel(layerMethod_, texRow[sx], row[px], layerOpa8_, fillColor);
         }
     }
 }

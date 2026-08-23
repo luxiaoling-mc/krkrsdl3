@@ -976,8 +976,6 @@ public:
 
     // void InternalDrawNoCache_GPU(tTVPDrawable *target, const tTVPRect &rect);
     void InternalDrawNoCache_CPU(tTVPDrawable* target, const tTVPRect& rect);
-    virtual void Draw_GPU(
-        tTVPDrawable* target, int x, int y, const tTVPRect& r, bool visiblecheck = true);
 
 private:
     void ParentUpdate(); // called when layer moves
@@ -1019,7 +1017,6 @@ private:
                        tjs_int opacity) override;
 
     void InternalComplete2(tTVPComplexRect& updateregion, tTVPDrawable* drawable);
-    void InternalComplete2_GPU(tTVPRect updateregion, tTVPDrawable* drawable);
     void InternalComplete(tTVPComplexRect& updateregion, tTVPDrawable* drawable);
     void CompleteForWindow(tTVPDrawable* drawable);
 

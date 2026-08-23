@@ -1,4 +1,5 @@
 #include "tjsCommHead.h"
+
 #include "tjsNativeLayer.h"
 
 #include "TVPMsg.h"
@@ -28,12 +29,6 @@ bool TVPFreeUnusedLayerCache = false;
 // set true to free unused layer cache bitmap
 // (layer cache is not freed until system compact event if this is false)
 //---------------------------------------------------------------------------
-
-static bool IsGPU()
-{
-    static bool isGPU = !TVPIsSoftwareRenderManager();
-    return isGPU;
-}
 
 //---------------------------------------------------------------------------
 // temporary bitmap management
@@ -4640,10 +4635,6 @@ void tTJSNI_BaseLayer::PiledCopy(tjs_int dx,
     {
         iTVPBaseBitmap* bmp = src->Complete(rect);
         tTVPRect rc(rect);
-        if (IsGPU())
-        {
-            rc.set_offsets(0, 0);
-        }
         ImageModified = MainImage->CopyRect(dx, dy, bmp, rc, TVP_BB_COPY_MAIN | TVP_BB_COPY_MASK) ||
                         ImageModified;
     }
@@ -6588,146 +6579,6 @@ void tTJSNI_BaseLayer::CopySelf(iTVPBaseBitmap* dest,
     }
 }
 //---------------------------------------------------------------------------
-void tTJSNI_BaseLayer::EffectImage(iTVPBaseBitmap* dest, const tTVPRect& destrect)
-{
-    if (Type == ltFilter)
-    {
-        // TODO: do filtering
-    }
-    else if (Type == ltEffect)
-    {
-        // TODO: do effect
-    }
-}
-void tTJSNI_BaseLayer::Draw_GPU(
-    tTVPDrawable* target, int x, int y, const tTVPRect& r, bool visiblecheck)
-{
-    if (visiblecheck && !IsSeen())
-        return;
-
-    tTVPRect rect;
-    if (!TVPIntersectRect(&rect, r, Rect))
-        return; // no intersection
-    x += rect.left - r.left;
-    y += rect.top - r.top;
-
-    tTVPRect rctar(rect);
-    rctar.set_offsets(x, y);
-
-    CurrentDrawTarget = target;
-
-    ParentRectToChildRect(rect); // to this layer based axis
-
-    // process drawing
-    DirectTransferToParent = false;
-
-    // caching is not enabled
-
-    if (Opacity < 255 || (InTransition && TransWithChildren))
-    {
-        // rearrange pipe line for transition
-        if (InTransition && TransWithChildren)
-        {
-            TransDrawable.Init(this, target);
-            target = &TransDrawable;
-        }
-        if (GetVisibleChildrenCount() == 0)
-        {
-            DrawSelf(target, rctar, rect);
-        }
-        else
-        {
-            // rearrange pipe line for transition
-            bool useTemp = false;
-            if (GetCacheEnabled())
-            {
-                UpdateBitmapForChild = CacheBitmap;
-            }
-            else
-            {
-                useTemp = true;
-                UpdateBitmapForChild =
-                    tTVPTempBitmapHolder::GetTemp(Rect.get_width(), Rect.get_height());
-            }
-            tTVPRect rectForChild(0, 0, Rect.get_width(), Rect.get_height());
-
-            // copy self image to UpdateBitmapForChild
-            if (MainImage != NULL)
-            {
-                // 				if (UpdateExcludeRect.top <= rect.top &&
-                // UpdateExcludeRect.bottom >= rect.bottom && rect.left >= UpdateExcludeRect.left &&
-                // rect.right <= UpdateExcludeRect.right) { 				} else
-                CopySelfForRect(UpdateBitmapForChild, 0, 0,
-                                rectForChild); // transfer self image
-            }
-
-            TVP_LAYER_FOR_EACH_CHILD_BEGIN(child)
-            {
-                // for each child...
-
-                // visible check
-                if (!child->Visible)
-                    continue;
-
-                // intersection check
-                if (!TVPIntersectRect(&UpdateRectForChild, rectForChild, child->Rect))
-                    continue;
-
-                // setup UpdateOfsX/Y UpdateRectForChildOfsX/Y
-                UpdateOfsX = 0;
-                UpdateOfsY = 0;
-                UpdateRectForChildOfsX = UpdateRectForChild.left - child->Rect.left;
-                UpdateRectForChildOfsY = UpdateRectForChild.top - child->Rect.top;
-
-                // call children's "Draw" method
-                child->Draw_GPU((tTVPDrawable*)this, UpdateRectForChild.left,
-                                UpdateRectForChild.top, UpdateRectForChild);
-            }
-            TVP_LAYER_FOR_EACH_CHILD_END
-            // rect.set_offsets(0, 0);
-            target->DrawCompleted(rctar, UpdateBitmapForChild, rect, DisplayType, Opacity);
-            if (useTemp)
-                tTVPTempBitmapHolder::FreeTemp();
-        }
-    }
-    else
-    {
-        if (GetVisibleChildrenCount() == 0)
-        {
-            DrawSelf(target, rctar, rect);
-        }
-        else
-        {
-            DrawnRegion.Clear();
-            {
-                tTVPRect rc(rect);
-                DrawSelf(target, rctar, rc);
-            }
-
-            TVP_LAYER_FOR_EACH_CHILD_BEGIN(child)
-            {
-                // for each child...
-
-                // visible check
-                if (!child->Visible)
-                    continue;
-
-                // intersection check
-                tTVPRect chrect;
-                if (!TVPIntersectRect(&chrect, rect, child->Rect))
-                    continue;
-
-                // call children's "Draw" method
-                child->Draw_GPU(target, x, y, rect);
-            }
-            TVP_LAYER_FOR_EACH_CHILD_END
-        }
-    }
-
-    CurrentDrawTarget = NULL;
-}
-
-//---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::InternalDrawNoCache_CPU(tTVPDrawable* target, const tTVPRect& rect)
 {
     bool totalopaque = (DisplayType == ltOpaque && Opacity == 255);
@@ -7427,15 +7278,6 @@ void tTJSNI_BaseLayer::InternalComplete2(tTVPComplexRect& updateregion, tTVPDraw
 }
 
 //---------------------------------------------------------------------------
-void tTJSNI_BaseLayer::InternalComplete2_GPU(tTVPRect updateregion, tTVPDrawable* drawable)
-{
-    if (Manager)
-        Manager->QueryUpdateExcludeRect();
-    updateregion.add_offsets(Rect.left, Rect.top);
-    Draw_GPU(drawable, 0, 0, updateregion, false);
-}
-
-//---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::InternalComplete(tTVPComplexRect& updateregion, tTVPDrawable* drawable)
 {
     BeforeCompletion();
@@ -7443,14 +7285,7 @@ void tTJSNI_BaseLayer::InternalComplete(tTVPComplexRect& updateregion, tTVPDrawa
     // at this point, final update region (in this completion) is determined
     InCompletion = true;
 
-    if (IsGPU())
-    {
-        InternalComplete2_GPU(updateregion.GetBound(), drawable);
-    }
-    else
-    {
-        InternalComplete2(updateregion, drawable);
-    }
+    InternalComplete2(updateregion, drawable);
 
     InCompletion = false;
     AfterCompletion();
@@ -7469,14 +7304,7 @@ void tTJSNI_BaseLayer::CompleteForWindow(tTVPDrawable* drawable)
         Manager->GetLayerTreeOwner()->StartBitmapCompletion(Manager);
     try
     {
-        if (IsGPU())
-        {
-            InternalComplete2_GPU(Rect, drawable);
-        }
-        else
-        {
-            InternalComplete2(Manager->GetUpdateRegionForCompletion(), drawable);
-        }
+        InternalComplete2(Manager->GetUpdateRegionForCompletion(), drawable);
     }
     catch (...)
     {
@@ -7524,30 +7352,6 @@ tTVPBaseTexture* tTJSNI_BaseLayer::Complete(const tTVPRect& rect)
         }
     };
 
-    class tCompleteDrawable_GPU : public tCompleteDrawable
-    {
-    public:
-        tCompleteDrawable_GPU(tTVPBaseTexture* bmp, tTVPLayerType layertype)
-          : tCompleteDrawable(bmp, layertype)
-        {
-            bmp->Fill(tTVPRect(0, 0, bmp->GetWidth(), bmp->GetHeight()),
-                      layertype == ltOpaque ? 0xFF000000 : 0);
-        };
-
-        virtual void DrawCompleted(const tTVPRect& destrect,
-                                   tTVPBaseTexture* bmp,
-                                   const tTVPRect& cliprect,
-                                   tTVPLayerType type,
-                                   tjs_int opacity) override
-        {
-            if (bmp != Bitmap)
-            {
-                BltImage(Bitmap, LayerType, destrect.left, destrect.top, bmp, cliprect, type,
-                         opacity, LayerType == ltOpaque);
-            }
-        }
-    };
-
     // complete given rectangle of cache.
 
     if (!GetCacheEnabled())
@@ -7571,19 +7375,11 @@ tTVPBaseTexture* tTJSNI_BaseLayer::Complete(const tTVPRect& rect)
 
     tTVPComplexRect ur;
     ur.Or(rect);
-    if (IsGPU())
-    {
-        tCompleteDrawable_GPU drawable(CacheBitmap, DisplayType);
-        InternalComplete(ur, &drawable); // complete cache
-    }
-    else
-    {
-        // create drawable object
-        tCompleteDrawable drawable(CacheBitmap, DisplayType);
+    // create drawable object
+    tCompleteDrawable drawable(CacheBitmap, DisplayType);
 
-        // complete
-        InternalComplete(ur, &drawable); // complete cache
-    }
+    // complete
+    InternalComplete(ur, &drawable); // complete cache
     return CacheBitmap;
 }
 //---------------------------------------------------------------------------

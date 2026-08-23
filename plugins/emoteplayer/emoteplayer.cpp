@@ -20,7 +20,7 @@ NCB_REGISTER_SUBCLASS(ResourceManager)
     NCB_METHOD(setEmotePSBDecryptFunc);
 }
 
-NCB_REGISTER_SUBCLASS_DELAY(SeparateLayerAdaptor)
+NCB_REGISTER_SUBCLASS(SeparateLayerAdaptor)
 {
     NCB_CONSTRUCTOR((iTJSDispatch2*));
     NCB_METHOD(assign);
@@ -31,7 +31,7 @@ NCB_REGISTER_SUBCLASS_DELAY(SeparateLayerAdaptor)
     PROPERTY(parent);
 }
 
-NCB_REGISTER_SUBCLASS_DELAY(EmotePlayer)
+NCB_REGISTER_SUBCLASS(EmotePlayer)
 {
     NCB_CONSTRUCTOR((ResourceManager*));
     NCB_METHOD(serialize);
@@ -84,7 +84,7 @@ NCB_REGISTER_SUBCLASS_DELAY(EmotePlayer)
     Variant("TimelinePlayFlagDifference", (int)EmotePlayer::TimelinePlayFlagDifference);
 }
 
-NCB_REGISTER_SUBCLASS_DELAY(Player)
+NCB_REGISTER_SUBCLASS(Player)
 {
     NCB_CONSTRUCTOR((ResourceManager*));
     NCB_METHOD(serialize);
@@ -141,6 +141,7 @@ NCB_REGISTER_SUBCLASS_DELAY(Player)
     PROPERTY(chara);
     PROPERTY(variableKeys);
     PROPERTY(tags);
+    PROPERTY(useD3D); // 脚本侧判断 D3D emote 可用性（见 AffineSourceMotion）
 }
 
 NCB_REGISTER_CLASS(Motion)

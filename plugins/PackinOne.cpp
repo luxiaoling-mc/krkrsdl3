@@ -14,6 +14,7 @@ static void InitPlugin_PackinOne()
     {
         // 我们并不知道这个插件是干啥的，只能根据情况猜一个
         ncbAutoRegister::LoadModule(TJS_N("LayerExMovie.dll"));
+        // 以全局对象为上下文执行，使脚本内 typeof extSourceMap 等全局引用可用
         TVPExecuteScript(TJS_N("\
 class AffineSourceMovie extends AffineSource {\
 	var _movie;\
@@ -25,7 +26,7 @@ class AffineSourceMovie extends AffineSource {\
 	}\
 	function createLayer(orig=void) {\
         var src = new global.Layer(_window, _pool);\
-        if (orig != = void)\
+        if (orig != void)\
         {\
             src.assignImages(orig);\
             src.width = orig.width;\
@@ -97,10 +98,12 @@ class AffineSourceMovie extends AffineSource {\
         _movie.startMovie(false);\
 	}\
 };\
-extSourceMap[\".WMV\"] = AffineSourceMovie;\
-extSourceMap[\".MPG\"] = AffineSourceMovie;\
-extSourceMap[\".MPEG\"] = AffineSourceMovie;\
-        "));
+if (typeof global.extSourceMap != \"undefined\") {\
+    global.extSourceMap[\".WMV\"] = AffineSourceMovie;\
+    global.extSourceMap[\".MPG\"] = AffineSourceMovie;\
+    global.extSourceMap[\".MPEG\"] = AffineSourceMovie;\
+}\
+        "), TVPGetScriptEngine()->GetGlobalNoAddRef());
     } catch (...) { };
 }
 

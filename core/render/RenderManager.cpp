@@ -4951,21 +4951,35 @@ iTVPRenderManager* TVPGetRenderManager(const ttstr& name)
     return mgr;
 }
 
+static iTVPRenderManager*& GetCurrentRenderManagerRef()
+{
+    // 函数内静态：插件（DrawDeviceD3D 等）可经 TVPSetRenderManager 注入
+    // GPU 渲染管理器；置 nullptr 恢复默认软件渲染
+    static iTVPRenderManager* _RenderManager = nullptr;
+    return _RenderManager;
+}
+
 iTVPRenderManager* TVPGetRenderManager()
 {
-    static iTVPRenderManager* _RenderManager;
-    if (!_RenderManager)
+    iTVPRenderManager*& mgr = GetCurrentRenderManagerRef();
+    if (!mgr)
     {
         ttstr str = "software";
-        _RenderManager = TVPGetRenderManager(str);
+        mgr = TVPGetRenderManager(str);
     }
-    return _RenderManager;
+    return mgr;
+}
+
+void TVPSetRenderManager(iTVPRenderManager* mgr)
+{
+    GetCurrentRenderManagerRef() = mgr;
 }
 
 bool TVPIsSoftwareRenderManager()
 {
-    static bool ret = TVPGetRenderManager()->IsSoftware();
-    return ret;
+    // 动态查询（不再缓存），以便插件运行时切换 GPU 渲染管理器后
+    // 脚本层（tjsNativeLayer::IsGPU）立即生效
+    return TVPGetRenderManager()->IsSoftware();
 }
 
 iTVPRenderManager* TVPGetSoftwareRenderManager()

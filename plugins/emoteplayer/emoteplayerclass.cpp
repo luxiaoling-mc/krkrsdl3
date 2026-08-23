@@ -804,6 +804,45 @@ void EmotePlayer::draw(iTJSDispatch2* objthis)
         ths->Update();
     }
 }
+
+// GPU 直通绘制：直接绘制到给定后端离屏目标（不回读、不经引擎 Layer）
+void EmotePlayer::drawToTarget(krkrsdl3::iTVPRenderBackend* renderer,
+                               void* target,
+                               void* maskTarget,
+                               bool selfClear,
+                               tjs_int width,
+                               tjs_int height,
+                               tjs_int originX,
+                               tjs_int originY)
+{
+    if (emtEngine._mainfile == nullptr || emtEngine._mainmotion == nullptr)
+        return;
+    if (!renderer || !target)
+        return;
+    // D3D 直通路径不经 draw()/ResetDrawArea()：_limitArea 必须在这里初始化，
+    // 否则 progress() 因"区域为零"提前返回（动画不推进）、updateTransMat()
+    // 投影矩阵退化（什么都不画）。只补区域/变换，不创建软渲染目标。
+    if (width > 0 && height > 0 &&
+        (_limitArea.width == _limitArea.originX || _limitArea.height == _limitArea.originY ||
+         _width != width || _height != height || _limitArea.originX != originX ||
+         _limitArea.originY != originY))
+    {
+        _width = width;
+        _height = height;
+        _limitArea.originX = originX;
+        _limitArea.originY = originY;
+        _limitArea.width = width;
+        _limitArea.height = height;
+        if (emtEngine._mainfile != nullptr)
+            _limitArea.zMax = emtEngine.getZMax() * 2;
+        if (_limitArea.zMax < 30.0f)
+            _limitArea.zMax = 30.0f;
+        updateTransMat();
+    }
+    renderer->SetTarget(target);
+    renderer->ClearTarget(selfClear);
+    emtEngine.draw(renderer, target, _limitArea, maskTarget);
+}
 void EmotePlayer::assign(iTJSDispatch2* anotherAdaptor)
 {
     TVPConsoleLog("EmotePlayer::assign TODO");

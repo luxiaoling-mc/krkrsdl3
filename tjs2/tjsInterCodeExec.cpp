@@ -2163,7 +2163,7 @@ void tTJSInterCodeContext::TypeOfMemberIndirect(tTJSVariant* ra,
                 TJS_GET_VM_REG(ra, code[1]) = TJS_N("undefined");
             }
             else if (TJS_FAILED(hr))
-                TJSThrowFrom_tjs_error(hr, *str);
+                TJSThrowFrom_tjs_error(hr, str ? *str : "");
         }
         catch (...)
         {

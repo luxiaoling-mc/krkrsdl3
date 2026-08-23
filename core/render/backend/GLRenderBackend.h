@@ -46,6 +46,8 @@ public:
     void ClearTarget(bool clearColor) override;
     uint8_t* LockTarget(void* target, int& pitch) override;
     void UnlockTarget(void* target) override;
+    void* GetTargetTexture(void* target) override;
+    void UpdateTargetTexture(void* target, const uint8_t* pixels, int width, int height, int pitch) override;
     void* CreateTexture(int width, int height) override;
     void UpdateTexture(void* texture, const uint8_t* pixels, int width, int height, int pitch) override;
     void DestroyTexture(void* texture) override;
@@ -57,6 +59,18 @@ public:
                   int indexCount,
                   void* texture,
                   float opacity) override;
+
+    // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
+    void LayerSetBlend(int method, float opacity, const float* uniformColor) override;
+    void LayerDrawRect(void* texture,
+                       float x,
+                       float y,
+                       float w,
+                       float h,
+                       float u0,
+                       float v0,
+                       float u1,
+                       float v1) override;
 
 private:
     // ---- 贴图（窗口贴图与一般贴图共用同一实现）----
@@ -84,16 +98,22 @@ private:
         unsigned int colorTex = 0;
         unsigned int depthTex = 0;
         int width = 0, height = 0;
+        Texture* texture = nullptr; // 颜色纹理的采样包装（注册在 textures_ 中）
         std::vector<uint8_t> readback; // LockTarget 回读缓冲
     };
     Target* FindTarget(void* handle) const;
 
     bool EnsureMeshProgram();
+    bool EnsureLayerProgram(); // Layer 合成专用 shader（软件 bm* 语义）
 
     unsigned int program_ = 0, vao_ = 0, vbo_ = 0, ibo_ = 0;
     size_t vboSize_ = 0, iboSize_ = 0;
     int locTexture_ = -1, locMask_ = -1, locEnableMask_ = -1, locEnableColor_ = -1;
     int locOpa_ = -1, locUniformColor_ = -1, locViewportSize_ = -1;
+
+    // Layer 合成资源
+    unsigned int programLayer_ = 0;
+    int locLayerTexture_ = -1, locLayerMethod_ = -1, locLayerOpa_ = -1, locLayerUniformColor_ = -1;
 
     Target* currentTarget_ = nullptr;
     Target* maskTarget_ = nullptr; // 当前蒙版
@@ -101,6 +121,9 @@ private:
     bool skipDraw_ = false;
     bool enableColor_ = false;
     float uniformColor_[4] = {0, 0, 0, 0};
+    int layerMethod_ = 0;     // LayerBlendMethod
+    float layerOpa_ = 1.0f;   // 0..1
+    float layerUniformColor_[4] = {0, 0, 0, 0};
     std::vector<Target*> targets_;
     std::vector<Texture*> textures_;
 };

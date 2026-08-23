@@ -248,3 +248,8 @@ void TVPRegisterRenderManager(const char* name, iTVPRenderManager* (*func)());
 iTVPRenderManager* TVPGetRenderManager();
 iTVPRenderManager* TVPGetRenderManager(const ttstr& name);
 bool TVPIsSoftwareRenderManager();
+// 切换当前渲染管理器（供插件如 DrawDeviceD3D 注入 GPU 渲染管理器；
+// 传 nullptr 恢复默认软件渲染）
+void TVPSetRenderManager(iTVPRenderManager* mgr);
+// 软件渲染管理器（province image 等固定使用；也供 GPU 管理器做软件回退）
+iTVPRenderManager* TVPGetSoftwareRenderManager();
