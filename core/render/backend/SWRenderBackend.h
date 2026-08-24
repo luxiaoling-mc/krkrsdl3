@@ -51,6 +51,7 @@ public:
     void* CreateTexture(int width, int height) override;
     void UpdateTexture(void* texture, const uint8_t* pixels, int width, int height, int pitch) override;
     void DestroyTexture(void* texture) override;
+    uint8_t* LockTexture(void* texture, int& pitch) override;
     void SetMask(void* maskTarget) override;
     void SetBlendMode(int mode, const float* uniformColor) override;
     void DrawMesh(const float* vertices,

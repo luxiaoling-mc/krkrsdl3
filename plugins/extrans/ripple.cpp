@@ -10,7 +10,7 @@
 #include "tjsErrorDefs.h"
 #include "Platform.h"
 #include "TVPMsg.h"
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include "ripple.h"
 #include "common.h"
 

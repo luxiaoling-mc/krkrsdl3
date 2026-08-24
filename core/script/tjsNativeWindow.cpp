@@ -1,12 +1,380 @@
 #include "tjsNativeWindow.h"
 
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "tjsDictionary.h"
 #include "TVPMsg.h"
+#include "TVPDebug.h"
 
 #include "tjsNativeLayer.h"
+#include "tjsNativeBasicDrawDevice.h"
+#include "tjsNativeVideoOverlay.h"
+#include "WindowManager.h"
+//---------------------------------------------------------------------------
+// tTJSNI_Window
+//---------------------------------------------------------------------------
+tTJSNI_Window::tTJSNI_Window()
+{
+}
+//---------------------------------------------------------------------------
+tTJSNI_Window::~tTJSNI_Window()
+{
+}
+//---------------------------------------------------------------------------
+tjs_error tTJSNI_Window::Construct(tjs_int numparams, tTJSVariant** param, iTJSDispatch2* tjs_obj)
+{
+    // 创建引擎侧窗口（TVPWindow 构造时自动注册到 WindowManager）
+    Window = new TVPWindow;
+    Window->SetOwner(tjs_obj);
+
+    // 检查父窗口参数（仅校验类型）
+    if (numparams >= 1 && param[0]->Type() == tvtObject)
+    {
+        tTJSVariantClosure clo = param[0]->AsObjectClosureNoAddRef();
+        tTJSNI_Window* win = NULL;
+        if (clo.Object != NULL)
+        {
+            if (TJS_FAILED(clo.Object->NativeInstanceSupport(
+                    TJS_NIS_GETINSTANCE, tTJSNC_Window::ClassID, (iTJSNativeInstance**)&win)))
+                TVPThrowExceptionMessage(TVPSpecifyWindow);
+            if (!win)
+                TVPThrowExceptionMessage(TVPSpecifyWindow);
+        }
+    }
+
+    // 设置默认 draw device 对象 "PassThrough"
+    {
+        iTJSDispatch2* cls = NULL;
+        iTJSDispatch2* newobj = NULL;
+        try
+        {
+            cls = new tTJSNC_BasicDrawDevice();
+            if (TJS_FAILED(cls->CreateNew(0, NULL, NULL, &newobj, 0, NULL, cls)))
+                TVPThrowExceptionMessage(TVPInternalError, TJS_N("tTJSNI_Window::Construct"));
+            Window->SetDrawDeviceObject(tTJSVariant(newobj, newobj));
+        }
+        catch (...)
+        {
+            if (cls)
+                cls->Release();
+            if (newobj)
+                newobj->Release();
+            throw;
+        }
+        if (cls)
+            cls->Release();
+        if (newobj)
+            newobj->Release();
+    }
+
+    return TJS_S_OK;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::Invalidate()
+{
+    if (Window)
+    {
+        iTJSDispatch2* owner = Window->GetOwnerNoAddRef();
+
+        // remove all events
+        if (owner)
+            TVPCancelSourceEvents(owner);
+        TVPCancelInputEvents(Window);
+        TVPRemoveWindowUpdate(Window);
+
+        // disconnect all VideoOverlay objects
+        {
+            tObjectListSafeLockHolder<tTJSNI_BaseVideoOverlay> holder(VideoOverlay);
+            tjs_int count = VideoOverlay.GetSafeLockedObjectCount();
+            for (tjs_int i = 0; i < count; i++)
+            {
+                tTJSNI_BaseVideoOverlay* item = VideoOverlay.GetSafeLockedObjectAt(i);
+                if (!item)
+                    continue;
+
+                item->Disconnect();
+            }
+        }
+
+        // invalidate all registered objects
+        ObjectVectorLocked = true;
+        std::vector<tTJSVariantClosure>::iterator i;
+
+        for (i = ObjectVector.begin(); i != ObjectVector.end(); i++)
+        {
+            // invalidate each --
+            // objects may throw an exception while invalidating,
+            // but here we cannot care for them.
+            try
+            {
+                i->Invalidate(0, NULL, NULL, NULL);
+                i->Release();
+            }
+            catch (eTJSError& e)
+            {
+                TVPAddLog(e.GetMessage()); // just in case, log the error
+            }
+        }
+
+        // remove all events (again)
+        if (owner)
+            TVPCancelSourceEvents(owner);
+        TVPCancelInputEvents(Window);
+
+        // release draw device
+        Window->SetDrawDeviceObject(tTJSVariant());
+
+        // 若窗口尚未自行销毁（Close 流程中已 NotifyWindowClose），在此销毁
+        if (!Window->IsClosed())
+            delete Window;
+        Window = nullptr;
+    }
+
+    inherited::Invalidate();
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::Add(tTJSVariantClosure clo)
+{
+    if (ObjectVectorLocked)
+        return;
+    if (ObjectVector.end() == std::find(ObjectVector.begin(), ObjectVector.end(), clo))
+    {
+        ObjectVector.push_back(clo);
+        clo.AddRef();
+    }
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::Remove(tTJSVariantClosure clo)
+{
+    if (ObjectVectorLocked)
+        return;
+    std::vector<tTJSVariantClosure>::iterator i;
+    i = std::find(ObjectVector.begin(), ObjectVector.end(), clo);
+    if (i != ObjectVector.end())
+    {
+        clo.Release();
+        ObjectVector.erase(i);
+    }
+}
+//---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
+// interface to video overlay object
+//---------------------------------------------------------------------------
+void tTJSNI_Window::RegisterVideoOverlayObject(tTJSNI_BaseVideoOverlay* ovl)
+{
+    VideoOverlay.Add(ovl);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::UnregisterVideoOverlayObject(tTJSNI_BaseVideoOverlay* ovl)
+{
+    VideoOverlay.Remove(ovl);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::ReadjustVideoRect()
+{
+    if (!Window)
+        return;
+
+    // re-adjust video rectangle.
+    // this reconnects owner window and video offsets.
+
+    tObjectListSafeLockHolder<tTJSNI_BaseVideoOverlay> holder(VideoOverlay);
+    tjs_int count = VideoOverlay.GetSafeLockedObjectCount();
+
+    for (tjs_int i = 0; i < count; i++)
+    {
+        tTJSNI_VideoOverlay* item = (tTJSNI_VideoOverlay*)VideoOverlay.GetSafeLockedObjectAt(i);
+        if (!item)
+            continue;
+        item->ResetOverlayParams();
+    }
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::WindowMoved()
+{
+    // inform video overlays that the window has moved.
+    // video overlays typically owns Direct3D surface which is not a part of
+    // normal window systems and does not matter where the owner window is.
+    // so we must inform window moving to overlay window.
+
+    tObjectListSafeLockHolder<tTJSNI_BaseVideoOverlay> holder(VideoOverlay);
+    tjs_int count = VideoOverlay.GetSafeLockedObjectCount();
+    for (tjs_int i = 0; i < count; i++)
+    {
+        tTJSNI_VideoOverlay* item = (tTJSNI_VideoOverlay*)VideoOverlay.GetSafeLockedObjectAt(i);
+        if (!item)
+            continue;
+        item->SetRectangleToVideoOverlay();
+    }
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::DetachVideoOverlay()
+{
+    // detach video overlay window
+    // this is done before the window is being fullscreened or un-fullscreened.
+    tObjectListSafeLockHolder<tTJSNI_BaseVideoOverlay> holder(VideoOverlay);
+    tjs_int count = VideoOverlay.GetSafeLockedObjectCount();
+    for (tjs_int i = 0; i < count; i++)
+    {
+        tTJSNI_VideoOverlay* item = (tTJSNI_VideoOverlay*)VideoOverlay.GetSafeLockedObjectAt(i);
+        if (!item)
+            continue;
+        item->DetachVideoOverlay();
+    }
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// PostInputEvent（脚本 API：向本窗口投递输入事件）
+//---------------------------------------------------------------------------
+void tTJSNI_Window::PostInputEvent(const ttstr& name, iTJSDispatch2* params)
+{
+    // posts input event
+    if (!Window)
+        return;
+
+    static ttstr key_name(TJS_N("key"));
+    static ttstr shift_name(TJS_N("shift"));
+
+    // check input event name
+    enum tEventType
+    {
+        etUnknown,
+        etOnKeyDown,
+        etOnKeyUp,
+        etOnKeyPress
+    } type;
+
+    if (name == TJS_N("onKeyDown"))
+        type = etOnKeyDown;
+    else if (name == TJS_N("onKeyUp"))
+        type = etOnKeyUp;
+    else if (name == TJS_N("onKeyPress"))
+        type = etOnKeyPress;
+    else
+        type = etUnknown;
+
+    if (type == etUnknown)
+        TVPThrowExceptionMessage(TVPSpecifiedEventNameIsUnknown, name);
+
+    if (type == etOnKeyDown || type == etOnKeyUp)
+    {
+        // this needs params, "key" and "shift"
+        if (params == NULL)
+            TVPThrowExceptionMessage(TVPSpecifiedEventNeedsParameter, name);
+
+        tjs_uint key;
+        tjs_uint32 shift = 0;
+
+        tTJSVariant val;
+        if (TJS_SUCCEEDED(params->PropGet(0, key_name.c_str(), key_name.GetHint(), &val, params)))
+            key = (tjs_int)val;
+        else
+            TVPThrowExceptionMessage(TVPSpecifiedEventNeedsParameter2, name, TJS_N("key"));
+
+        if (TJS_SUCCEEDED(
+                params->PropGet(0, shift_name.c_str(), shift_name.GetHint(), &val, params)))
+            shift = (tjs_int)val;
+        else
+            TVPThrowExceptionMessage(TVPSpecifiedEventNeedsParameter2, name, TJS_N("shift"));
+
+        if (type == etOnKeyDown)
+            Window->PostKeyDown((tjs_uint16)key, shift);
+        // else: 旧实现中 onKeyUp 投递为空操作，保持行为不变
+    }
+    else if (type == etOnKeyPress)
+    {
+        // this needs param, "key"
+        if (params == NULL)
+            TVPThrowExceptionMessage(TVPSpecifiedEventNeedsParameter, name);
+
+        tjs_uint key;
+
+        tTJSVariant val;
+        if (TJS_SUCCEEDED(params->PropGet(0, key_name.c_str(), key_name.GetHint(), &val, params)))
+            key = (tjs_int)val;
+        else
+            TVPThrowExceptionMessage(TVPSpecifiedEventNeedsParameter2, name, TJS_N("key"));
+
+        Window->PostKeyPress((tjs_uint16)key);
+    }
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// Mouse Cursor management
+//---------------------------------------------------------------------------
+static tTJSHashTable<ttstr, tjs_int> TVPCursorTable;
+tjs_int TVPGetCursor(const ttstr& name)
+{
+    // get placed path
+    ttstr place(TVPSearchPlacedPath(name));
+
+    // search in cache
+    tjs_int* in_hash = TVPCursorTable.Find(place);
+    if (in_hash)
+        return *in_hash;
+    return 0;
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// tTJSNI_Window::SetMaskRegion
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetMaskRegion(tjs_int threshold)
+{
+    if (!Window)
+        return;
+
+    iTVPDrawDevice* dd = Window->GetDrawDevice();
+    if (!dd)
+        TVPThrowExceptionMessage(TVPWindowHasNoLayer);
+    tTJSNI_BaseLayer* lay = dd->GetPrimaryLayer();
+    if (!lay)
+        TVPThrowExceptionMessage(TVPWindowHasNoLayer);
+    // mask region creation is not implemented
+}
+//---------------------------------------------------------------------------
+
+#define MK_SHIFT 4
+#define MK_CONTROL 8
+#define MK_ALT (0x20)
+tjs_uint32 TVP_TShiftState_To_uint32(tjs_uint32 state)
+{
+    tjs_uint32 result = 0;
+    if (state & MK_SHIFT)
+    {
+        result |= ssShift;
+    }
+    if (state & MK_CONTROL)
+    {
+        result |= ssCtrl;
+    }
+    if (state & MK_ALT)
+    {
+        result |= ssAlt;
+    }
+    return result;
+}
+tjs_uint32 TVP_TShiftState_From_uint32(tjs_uint32 state)
+{
+    tjs_uint32 result = 0;
+    if (state & ssShift)
+    {
+        result |= MK_SHIFT;
+    }
+    if (state & ssCtrl)
+    {
+        result |= MK_CONTROL;
+    }
+    if (state & ssAlt)
+    {
+        result |= MK_ALT;
+    }
+    return result;
+}
+//---------------------------------------------------------------------------
+
 // tTJSNC_Window : TJS Window class
 //---------------------------------------------------------------------------
 tjs_uint32 tTJSNC_Window::ClassID = -1;
@@ -1078,7 +1446,7 @@ TJS_END_NATIVE_PROP_DECL(waitVSync)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(layerTreeOwnerInterface){TJS_BEGIN_NATIVE_PROP_GETTER{
     TJS_GET_NATIVE_INSTANCE(/*var. name*/ _this, /*var. type*/ tTJSNI_Window);
-*result = reinterpret_cast<tjs_int64>(static_cast<iTVPLayerTreeOwner*>(_this));
+*result = reinterpret_cast<tjs_int64>(static_cast<iTVPLayerTreeOwner*>(_this->GetWindow()));
 return TJS_S_OK;
 }
 TJS_END_NATIVE_PROP_GETTER

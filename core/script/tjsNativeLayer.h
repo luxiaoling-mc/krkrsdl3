@@ -4,7 +4,7 @@
 #include "ComplexRect.h"
 #include "drawable.h"
 #include "tvpinputdefs.h"
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include "TVPEvent.h"
 #include "ObjectList.h"
 #include "tjsNative.h"

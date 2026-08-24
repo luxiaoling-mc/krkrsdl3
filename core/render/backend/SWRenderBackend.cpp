@@ -377,6 +377,15 @@ void SWRenderBackend::UpdateTexture(void* handle, const uint8_t* pixels, int wid
     }
 }
 
+uint8_t* SWRenderBackend::LockTexture(void* handle, int& pitch)
+{
+    Texture* texture = FindTexture(handle);
+    if (!texture)
+        return nullptr;
+    pitch = texture->width * 4;
+    return texture->pixels.data();
+}
+
 void SWRenderBackend::DestroyTexture(void* handle)
 {
     Texture* texture = FindTexture(handle);

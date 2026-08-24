@@ -1,7 +1,7 @@
 #include "tjsCommHead.h"
 #include "TVPSettings.h"
 
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 
 #include "TVPSystem.h"
 #include "TVPStorage.h"

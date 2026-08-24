@@ -7,7 +7,8 @@
 #include "TVPMsg.h"
 #include "TVPSystem.h"
 #include "TVPScript.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
+#include "WindowManager.h"
 #include "TVPStorage.h"
 #include "TVPDebug.h"
 #include "TVPApplication.h"
@@ -142,7 +143,7 @@ void tTVPSystemControl::SystemWatchTimerTimer()
     tjs_int count = TVPGetWindowCount();
     for (tjs_int i = 0; i < count; i++)
     {
-        tTJSNI_Window* win = TVPGetWindowListAt(i);
+        TVPWindow* win = TVPGetWindowListAt(i);
         win->TickBeat();
     }
 

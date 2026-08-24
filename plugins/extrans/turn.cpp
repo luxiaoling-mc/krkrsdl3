@@ -4,7 +4,7 @@
 #include "transhandler.h"
 #include "tjsErrorDefs.h"
 #include "TVPMsg.h"
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include <math.h>
 #include "turn.h"
 #include "turntrans_table.h"

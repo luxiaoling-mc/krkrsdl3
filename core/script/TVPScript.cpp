@@ -24,7 +24,8 @@
 #include "Platform.h"
 #include "tjsRandomGenerator.h"
 #include "TVPApplication.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
+#include "WindowManager.h"
 
 #include "tjsNativeDebug.h"
 #include "tjsNativeLayer.h"

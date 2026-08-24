@@ -13,10 +13,9 @@
 
 #include "TVPApplication.h"
 #include "RenderManager.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "Platform.h"
-#include "MainWindowLayer.h"
-#include "eventCallbackFun.h"
+#include "WindowManager.h"
 #include "TVPSettings.h"
 #include "TVPCompositor.h"
 #include "TVPDebug.h"
@@ -197,7 +196,7 @@ static void ProcessEvent(SDL_Event* event)
     {
         case SDL_QUIT:
         {
-            tTJSNI_Window* tmpwind = TVPGetActiveWindow();
+            TVPWindow* tmpwind = TVPGetActiveWindow();
             if (tmpwind)
                 tmpwind->Close();
             break;

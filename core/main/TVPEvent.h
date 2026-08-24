@@ -146,9 +146,9 @@ extern void TVPCancelSourceEvents(iTJSDispatch2* source);
 //---------------------------------------------------------------------------
 // Window update event related
 //---------------------------------------------------------------------------
-class tTJSNI_BaseWindow;
-extern void TVPPostWindowUpdate(tTJSNI_BaseWindow* window);
-extern void TVPRemoveWindowUpdate(tTJSNI_BaseWindow* window);
+class TVPWindow;
+extern void TVPPostWindowUpdate(TVPWindow* window);
+extern void TVPRemoveWindowUpdate(TVPWindow* window);
 extern void TVPDeliverWindowUpdateEvents();
 //---------------------------------------------------------------------------
 

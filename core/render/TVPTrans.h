@@ -6,10 +6,18 @@
      See details of license at "license.txt"
 */
 //---------------------------------------------------------------------------
-// Transition handler mamagement & default transition handlers
+// TVPTrans : transition handler management & default transition handlers
+//
+// 转场子系统（渲染后端无关）：
+//   - 转场 handler provider 注册表与默认转场（crossfade / universal / scroll）
+//   - 脚本对象 → 转场接口的适配层（选项/图像/扫描线提供者）
+//   - 所有混合操作统一经当前渲染管理器（TVPGetRenderManager()）执行：
+//       CPU 路径（默认软件 RenderManager）行为与 krkrz 原版逐像素一致；
+//       GPU 路径由插件经 TVPSetRenderManager() 注入的 GPU RenderManager
+//       提供同名渲染方法（ConstAlphaBlend_SD[_d/_a]、UnivTransBlend[_d/_a]、
+//       Copy），TVPTrans 不做任何后端假设。
 //---------------------------------------------------------------------------
-#ifndef TransIntfH
-#define TransIntfH
+#pragma once
 //---------------------------------------------------------------------------
 
 #include "LayerBitmap.h"
@@ -161,5 +169,3 @@ public:
         /*in*/ tjs_uint src2w,
         tjs_uint src2h); // source 2 size
 };
-
-#endif

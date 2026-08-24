@@ -5,7 +5,7 @@
 #include "TVPMsg.h"
 #include "TVPApplication.h"
 #include "TVPSystem.h"
-#include "MainWindowLayer.h"
+#include "WindowManager.h"
 
 #include "tjsNativeMenuItem.h"
 

@@ -3211,7 +3211,25 @@ bool tTJSNI_BaseLayer::_HitTestNoVisibleCheck(tjs_int x, tjs_int y)
                 if (HitThreshold <= 0)
                     return true;
 
-                tjs_uint32 cl = MainImage->GetPoint(px, py);
+                tjs_uint32 cl;
+                if (MainImage->GetBPP() == 32)
+                {
+                    // 经显式回读缓存取像素（GPU 驻留时同一事件内多次命中共享一次回读，
+                    // 避免逐点隐式 GPU→CPU 回读；软件路径零拷贝，行为不变）
+                    cl = 0;
+                    void* pixels = MainImage->GetTexture()->LockCPURead();
+                    if (pixels)
+                    {
+                        tjs_int pitch = MainImage->GetPitchBytes();
+                        cl = ((tjs_uint32*)pixels)[py * (pitch / 4) + px];
+                        MainImage->GetTexture()->UnlockCPU();
+                    }
+                }
+                else
+                {
+                    // 8bpp 掩码纹理：固定软件驻留，GetPoint 零成本
+                    cl = MainImage->GetPoint(px, py);
+                }
                 if ((tjs_int)(cl >> 24) < HitThreshold)
                     return false;
                 else

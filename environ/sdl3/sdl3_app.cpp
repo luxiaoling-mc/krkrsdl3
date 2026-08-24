@@ -13,10 +13,9 @@
 #endif
 
 #include "TVPApplication.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "Platform.h"
-#include "MainWindowLayer.h"
-#include "eventCallbackFun.h"
+#include "WindowManager.h"
 #include "TVPSettings.h"
 #include "TVPCompositor.h"
 #include "TVPDebug.h"
@@ -424,8 +423,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
         // 退出
         case SDL_EVENT_QUIT:
         {
-            tTJSNI_Window* tmpwind = TVPGetActiveWindow();
-            tmpwind->Close();
+            TVPWindow* tmpwind = TVPGetActiveWindow();
+            if (tmpwind)
+                tmpwind->Close();
             break;
         }
         // 键盘事件

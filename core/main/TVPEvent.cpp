@@ -2,7 +2,7 @@
 #include "TVPEvent.h"
 
 #include "TVPSystem.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "tjsDictionary.h"
 #include "TVPMsg.h"
 #include "TVPScript.h"
@@ -127,10 +127,10 @@ tjs_uint64 tTVPEvent::GetSequence() const
 //---------------------------------------------------------------------------
 class tTVPWinUpdateEvent
 {
-    tTJSNI_BaseWindow* Window;
+    TVPWindow* Window;
 
 public:
-    tTVPWinUpdateEvent(tTJSNI_BaseWindow* window) { Window = window; }
+    tTVPWinUpdateEvent(TVPWindow* window) { Window = window; }
 
     tTVPWinUpdateEvent(const tTVPWinUpdateEvent& ref) { Window = ref.Window; }
 
@@ -138,11 +138,11 @@ public:
 
     void Deliver() const
     {
-        if (static_cast<tTJSNI_Window*>(Window)->GetVisible())
+        if (Window->GetVisible())
             Window->UpdateContent();
     }
 
-    tTJSNI_BaseWindow* GetWindow() const { return Window; }
+    TVPWindow* GetWindow() const { return Window; }
 
     void MarkEmpty() { Window = NULL; }
 
@@ -599,7 +599,7 @@ void TVPDeliverAllEvents()
 // TVPPostWindowUpdate
 //---------------------------------------------------------------------------
 bool TVPWindowUpdateEventsDelivering = false;
-void TVPPostWindowUpdate(tTJSNI_BaseWindow* window)
+void TVPPostWindowUpdate(TVPWindow* window)
 {
 
     if (!TVPWindowUpdateEventsDelivering)
@@ -645,7 +645,7 @@ void TVPPostWindowUpdate(tTJSNI_BaseWindow* window)
 //---------------------------------------------------------------------------
 // TVPRemoveWindowUpdate
 //---------------------------------------------------------------------------
-void TVPRemoveWindowUpdate(tTJSNI_BaseWindow* window)
+void TVPRemoveWindowUpdate(TVPWindow* window)
 {
     // removes all window update events from queue.
     if (TVPWinUpdateEventQueue.size())

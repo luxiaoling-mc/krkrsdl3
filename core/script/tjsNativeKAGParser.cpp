@@ -18,7 +18,7 @@
 #include "TVPStorage.h"
 #include "TVPMsg.h"
 #include "TVPPlugin.h"
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include <vector>
 
 namespace TJS

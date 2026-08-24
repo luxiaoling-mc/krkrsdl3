@@ -4,7 +4,7 @@
 #include "TVPMsg.h"
 #include "TVPSystem.h"
 #include "TVPDebug.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 
 #include "krmovie.h"
 

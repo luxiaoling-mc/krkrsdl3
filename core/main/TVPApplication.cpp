@@ -21,7 +21,7 @@
 #include "Platform.h"
 #include "PlatformView.h"
 #include "RenderManager.h"
-#include "MainWindowLayer.h"
+#include "WindowManager.h"
 #include "TVPEvent.h"
 #include "TVPCompositor.h"
 

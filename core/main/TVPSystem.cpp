@@ -17,7 +17,7 @@
 #include "PlatformThread.h"
 #include "PlatformFile.h"
 #include "XP3Archive.h"
-#include "MainWindowLayer.h"
+#include "WindowManager.h"
 #include "TVPSettings.h"
 #include "WaveDecodeThread.h"
 
@@ -730,7 +730,7 @@ void TVPTerminateSync(int code)
 //---------------------------------------------------------------------------
 void TVPMainWindowClosed()
 {
-    // called from WindowIntf.cpp, caused by closing all window.
+    // called from WindowManager.cpp, caused by closing all window.
     if (TVPTerminateOnWindowClose)
         TVPTerminateAsync();
 }

@@ -30,6 +30,8 @@ struct TVPSprite
     float scale = 1.0;
     int width = 0, height = 0;
     bool isVisible = false;
+    // 纹理是否借用于外部（如 GPU 纹理别名）：借用的句柄不由 sprite 销毁
+    bool borrowedTexture = false;
 };
 
 // 获取所有渲染可用后端（SDL 渲染驱动列表，仅作信息展示；选择逻辑见 TVPListRenderBackends）

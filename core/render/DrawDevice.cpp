@@ -14,7 +14,8 @@
 #include "DrawDevice.h"
 #include "TVPMsg.h"
 #include "LayerManager.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
+#include "TVPCompositor.h"
 #include "TVPDebug.h"
 #include "TVPSystem.h"
 #include "TVPSettings.h"
@@ -73,12 +74,18 @@ tTVPBasicDrawDevice::~tTVPBasicDrawDevice()
 //---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::Destruct()
 {
+    // 解除窗口对呈现贴图的借用，并释放呈现转化用的 scratch 贴图
+    if (Window)
+        Window->ReleaseBorrowedTexture();
+    krkrsdl3::iTVPRenderBackend* backend = krkrsdl3::TVPGetRenderBackend();
+    if (backend && ScratchTexture)
+        backend->DestroyTexture(ScratchTexture);
     delete this;
 }
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-void tTVPBasicDrawDevice::SetWindowInterface(iTVPWindow* window)
+void tTVPBasicDrawDevice::SetWindowInterface(TVPWindow* window)
 {
     Window = window;
 }
@@ -527,16 +534,45 @@ void tTVPBasicDrawDevice::Update()
 //---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::Show()
 {
-    if (Window)
+    if (!Window || !Manager)
+        return;
+    iTVPBaseBitmap* buf = Manager->GetDrawBuffer();
+    if (!buf)
+        return;
+    iTVPTexture2D* tex = buf->GetTexture();
+    if (!tex)
+        return;
+
+    // GPU 驻留（GPU RenderManager 注入场景）：Layer 体系纹理自带 compositor 句柄 → 直传
+    if (!tex->IsCPUResident() && tex->GetTextureHandle())
     {
-        iWindowLayer* form = Window->GetForm();
-        if (form && Manager)
-        {
-            iTVPBaseBitmap* buf = Manager->GetDrawBuffer();
-            if (buf)
-                form->UpdateDrawBuffer(buf->GetTexture());
-        }
+        Window->PresentTexture(tex->GetTextureHandle(), tex->GetWidth(), tex->GetHeight());
+        return;
     }
+
+    // 转化：iTVPTexture2D（软渲染 DrawBuffer）→ compositor 一般贴图 → 窗口统一呈现
+    krkrsdl3::iTVPRenderBackend* backend = krkrsdl3::TVPGetRenderBackend();
+    if (!backend)
+        return;
+    tjs_int w = tex->GetWidth(), h = tex->GetHeight();
+    if (!ScratchTexture || w != ScratchW || h != ScratchH)
+    {
+        if (ScratchTexture)
+            backend->DestroyTexture(ScratchTexture);
+        ScratchTexture = backend->CreateTexture(w, h);
+        ScratchW = w;
+        ScratchH = h;
+    }
+    if (!ScratchTexture)
+        return;
+
+    void* pixels = tex->LockCPURead();
+    if (pixels)
+    {
+        backend->UpdateTexture(ScratchTexture, (tjs_uint8*)pixels, w, h, tex->GetPitch());
+        tex->UnlockCPU();
+    }
+    Window->PresentTexture(ScratchTexture, w, h);
 }
 //---------------------------------------------------------------------------
 bool tTVPBasicDrawDevice::WaitForVBlank(tjs_int* in_vblank, tjs_int* delayed)

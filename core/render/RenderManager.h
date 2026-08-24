@@ -70,6 +70,21 @@ public:
         return true;
     }
 
+    // ---- 纹理驻留与显式同步（防 GPU→CPU 隐式回读，见 docs/gpu-readback-design.md）----
+    // 默认实现为 CPU 驻留（软件纹理，零拷贝）；GPU 纹理实现需 override。
+    // 原则：读不切换驻留（只从缓存读）、写才标记脏、单帧同一纹理至多一次回读+一次上传。
+    virtual bool IsCPUResident() const { return true; }
+    bool IsGPUResident() const { return !IsCPUResident(); }
+    // GPU 驻留时的后端纹理句柄（供上屏 sprite 别名，零拷贝）；CPU 驻留返回 nullptr
+    virtual void* GetTextureHandle() { return nullptr; }
+    // 显式回读（带缓存）：返回 CPU 像素；软件实现零拷贝返回真实缓冲
+    virtual void* LockCPURead() { return const_cast<void*>(GetPixelData()); }
+    virtual void UnlockCPU() {}
+    // CPU 数据已修改，下次 GPU 使用前需上传
+    virtual void MarkCPUModified() {}
+    // 纹理已驻留 GPU，CPU 缓存失效
+    virtual void InvalidateCPUCache() {}
+
     static void RecycleProcess();
 };
 

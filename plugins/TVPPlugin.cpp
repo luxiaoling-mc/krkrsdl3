@@ -22,7 +22,7 @@
 
 #include "tjsHashSearch.h"
 #include "TVPEvent.h"
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include "tjsArray.h"
 #include "tjsDictionary.h"
 #include "TVPDebug.h"

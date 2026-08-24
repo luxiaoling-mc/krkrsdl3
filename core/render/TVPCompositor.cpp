@@ -177,9 +177,11 @@ void TVPUpdateTexture(TVPSprite* sp, uint8_t* buff, int width, int height, int p
 void TVPDestroyTexture(TVPSprite* sp)
 {
     iTVPRenderBackend* backend = TVPGetRenderBackend();
-    if (backend && sp->texture)
+    // 借用的纹理（GPU 别名）不由 sprite 销毁，只解除引用
+    if (backend && sp->texture && !sp->borrowedTexture)
         backend->DestroyWindowTexture(sp->texture);
     sp->texture = nullptr;
+    sp->borrowedTexture = false;
 }
 
 // TODO 或许应该和window整合起来管理

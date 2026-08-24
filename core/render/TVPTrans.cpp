@@ -6,11 +6,19 @@
         See details of license at "license.txt"
 */
 //---------------------------------------------------------------------------
-// Transition handler mamagement & default transition handlers
+// TVPTrans : transition handler management & default transition handlers
+//
+// 渲染后端无关的转场子系统。所有混合操作统一经当前渲染管理器执行
+// （TVPGetRenderManager()）：
+//   - CPU 路径（默认软件 RenderManager）：RenderMethod + OperateRect，
+//     与 krkrz 原版逐像素一致；
+//   - GPU 路径：插件经 TVPSetRenderManager() 注入的 GPU RenderManager
+//     提供同名渲染方法（ConstAlphaBlend_SD[_d/_a]、UnivTransBlend[_d/_a]、
+//     Copy），本模块不做任何后端假设。
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
-#include "TransIntf.h"
+#include "TVPTrans.h"
 #include "TVPGraphicsLoader.h"
 #include "tjsHashSearch.h"
 #include "TVPMsg.h"
@@ -18,8 +26,10 @@
 #include "TVPDebug.h"
 #include "RenderManager.h"
 #include "Platform.h"
+#include "tjsUtils.h"
 
-#include "tjsNativeLayer.h"
+// tjsNativeLayer.h 中声明的函数
+const tTVPBaseTexture& TVPGetInitialBitmap();
 
 //---------------------------------------------------------------------------
 // iTVPSimpleOptionProvider implementation
@@ -168,36 +178,6 @@ tjs_error tTVPSimpleImageProvider::LoadImage(
 }
 tTVPSimpleImageProvider TVPSimpleImageProvider;
 //---------------------------------------------------------------------------
-
-#if WIN32
-//---------------------------------------------------------------------------
-// Image Provider Service for other plug-ins
-//---------------------------------------------------------------------------
-iTVPScanLineProvider* TVPSLPLoadImage(
-    const ttstr& name, tjs_int bpp, tjs_uint32 key, tjs_uint w, tjs_uint h)
-{
-    if (bpp != 8 && bpp != 32)
-        return NULL; // invalid bitmap color depth
-
-    tTVPBaseBitmap* bitmap = new tTVPBaseBitmap(TVPGetInitialBitmap());
-
-    iTVPScanLineProvider* pro;
-
-    try
-    {
-        TVPLoadGraphic(bitmap, name, key, w, h, bpp == 8 ? glmGrayscale : glmNormal);
-        pro = new tTVPScanLineProviderForBaseBitmap(bitmap, true);
-    }
-    catch (...)
-    {
-        delete bitmap;
-        throw;
-    }
-
-    return pro;
-}
-//---------------------------------------------------------------------------
-#endif
 
 //---------------------------------------------------------------------------
 // iTVPScanLineProvider implementation for image provider ( holds tTVPBaseBitmap )
@@ -366,10 +346,184 @@ static tTVPAtExit TVPClearTransHandlerProviderAtExit(TVP_ATEXIT_PRI_SHUTDOWN,
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
+// tTVPTransBlender : 转场混合门面
+//
+// 全部混合操作统一经当前渲染管理器执行，不做 CPU/GPU 后端假设：
+//   - 默认软件 RenderManager：RenderMethod + OperateRect（krkrz 原版语义）；
+//   - 插件注入的 GPU RenderManager：同一套 GetRenderMethod + OperateRect 契约，
+//     由注入方实现转场混合方法。
+// 渲染方法按"渲染管理器实例"缓存，切换渲染管理器（TVPSetRenderManager）后
+// 自动重新解析，避免旧实现的函数级 static 缓存跨管理器失效的问题。
+//---------------------------------------------------------------------------
+class tTVPTransBlender
+{
+    struct tTVPTransMethodSet
+    {
+        iTVPRenderManager* Manager = nullptr;
+        iTVPRenderMethod* CrossFade = nullptr;  // ConstAlphaBlend_SD
+        iTVPRenderMethod* CrossFadeD = nullptr; // ConstAlphaBlend_SD_d
+        iTVPRenderMethod* CrossFadeA = nullptr; // ConstAlphaBlend_SD_a
+        iTVPRenderMethod* UnivTrans = nullptr;  // UnivTransBlend
+        iTVPRenderMethod* UnivTransD = nullptr; // UnivTransBlend_d
+        iTVPRenderMethod* UnivTransA = nullptr; // UnivTransBlend_a
+        iTVPRenderMethod* Copy = nullptr;       // Copy
+        int OpaID = -1;
+        int PhaseID = -1;
+        int VagueID = -1;
+
+        void Ensure(iTVPRenderManager* mgr)
+        {
+            if (Manager == mgr)
+                return;
+            Manager = mgr;
+            CrossFade = Require(mgr->GetRenderMethod("ConstAlphaBlend_SD"), "ConstAlphaBlend_SD");
+            CrossFadeD =
+                Require(mgr->GetRenderMethod("ConstAlphaBlend_SD_d"), "ConstAlphaBlend_SD_d");
+            CrossFadeA =
+                Require(mgr->GetRenderMethod("ConstAlphaBlend_SD_a"), "ConstAlphaBlend_SD_a");
+            UnivTrans = Require(mgr->GetRenderMethod("UnivTransBlend"), "UnivTransBlend");
+            UnivTransD = Require(mgr->GetRenderMethod("UnivTransBlend_d"), "UnivTransBlend_d");
+            UnivTransA = Require(mgr->GetRenderMethod("UnivTransBlend_a"), "UnivTransBlend_a");
+            Copy = Require(mgr->GetRenderMethod("Copy"), "Copy");
+            OpaID = CrossFade->EnumParameterID("opacity");
+            PhaseID = UnivTrans->EnumParameterID("phase");
+            VagueID = UnivTrans->EnumParameterID("vague");
+        }
+
+        static iTVPRenderMethod* Require(iTVPRenderMethod* m, const char* name)
+        {
+            if (!m)
+                TVPThrowExceptionMessage(TVPTransHandlerError,
+                                         ttstr(TJS_N("transition blend method \"")) + name +
+                                             TJS_N("\" is not supported by current render manager"));
+            return m;
+        }
+    };
+
+    tTVPTransMethodSet Methods;
+
+    void Ensure() { Methods.Ensure(TVPGetRenderManager()); }
+
+    static iTVPRenderMethod* PickMethod(tTVPLayerType layertype,
+                                        iTVPRenderMethod* normal,
+                                        iTVPRenderMethod* alpha,
+                                        iTVPRenderMethod* addalpha)
+    {
+        if (TVPIsTypeUsingAlpha(layertype))
+            return alpha;
+        if (TVPIsTypeUsingAddAlpha(layertype))
+            return addalpha;
+        return normal;
+    }
+
+public:
+    iTVPRenderManager* GetManager()
+    {
+        Ensure();
+        return Methods.Manager;
+    }
+
+    // 交叉淡化（phase: 0..255）
+    void CrossFade(iTVPScanLineProvider* dest,
+                   tjs_int destleft,
+                   tjs_int desttop,
+                   iTVPScanLineProvider* src1,
+                   tjs_int src1left,
+                   tjs_int src1top,
+                   iTVPScanLineProvider* src2,
+                   tjs_int src2left,
+                   tjs_int src2top,
+                   tjs_int width,
+                   tjs_int height,
+                   tjs_int phase,
+                   tTVPLayerType layertype)
+    {
+        Ensure();
+        iTVPRenderMethod* method =
+            PickMethod(layertype, Methods.CrossFade, Methods.CrossFadeD, Methods.CrossFadeA);
+        method->SetParameterOpa(Methods.OpaID, phase);
+
+        tRenderTexRectArray::Element src_tex[] = {
+            tRenderTexRectArray::Element(src1->GetTexture(),
+                                         tTVPRect(src1left, src1top, src1left + width,
+                                                  src1top + height)),
+            tRenderTexRectArray::Element(src2->GetTexture(),
+                                         tTVPRect(src2left, src2top, src2left + width,
+                                                  src2top + height))};
+        Methods.Manager->OperateRect(method, dest->GetTextureForRender(), nullptr,
+                                     tTVPRect(destleft, desttop, destleft + width,
+                                              desttop + height),
+                                     tRenderTexRectArray(src_tex));
+    }
+
+    // 通用转场（rule 图驱动），逐帧设置相位
+    void SetUnivTransPhase(tTVPLayerType layertype, tjs_int phase, tjs_int vague)
+    {
+        Ensure();
+        iTVPRenderMethod* method =
+            PickMethod(layertype, Methods.UnivTrans, Methods.UnivTransD, Methods.UnivTransA);
+        method->SetParameterInt(Methods.VagueID, vague);
+        method->SetParameterInt(Methods.PhaseID, phase);
+    }
+
+    void Universal(iTVPScanLineProvider* dest,
+                   tjs_int destleft,
+                   tjs_int desttop,
+                   iTVPScanLineProvider* src1,
+                   tjs_int src1left,
+                   tjs_int src1top,
+                   iTVPScanLineProvider* src2,
+                   tjs_int src2left,
+                   tjs_int src2top,
+                   iTVPScanLineProvider* rule,
+                   tjs_int ruleleft,
+                   tjs_int ruletop,
+                   tjs_int width,
+                   tjs_int height,
+                   tTVPLayerType layertype)
+    {
+        Ensure();
+        iTVPRenderMethod* method =
+            PickMethod(layertype, Methods.UnivTrans, Methods.UnivTransD, Methods.UnivTransA);
+
+        tRenderTexRectArray::Element src_tex[] = {
+            tRenderTexRectArray::Element(src1->GetTexture(),
+                                         tTVPRect(src1left, src1top, src1left + width,
+                                                  src1top + height)),
+            tRenderTexRectArray::Element(src2->GetTexture(),
+                                         tTVPRect(src2left, src2top, src2left + width,
+                                                  src2top + height)),
+            tRenderTexRectArray::Element(
+                rule->GetTexture(),
+                tTVPRect(ruleleft, ruletop, ruleleft + width, ruletop + height))};
+        Methods.Manager->OperateRect(method, dest->GetTextureForRender(), nullptr,
+                                     tTVPRect(destleft, desttop, destleft + width,
+                                              desttop + height),
+                                     tRenderTexRectArray(src_tex));
+    }
+
+    // 矩形拷贝（src==dest 且区域重叠时也安全；32bpp）
+    void CopyRect(iTVPScanLineProvider* destimg,
+                  tjs_int x,
+                  tjs_int y,
+                  iTVPScanLineProvider* srcimg,
+                  const tTVPRect& srcrect)
+    {
+        Ensure();
+        tRenderTexRectArray::Element src_tex[] = {
+            tRenderTexRectArray::Element(srcimg->GetTexture(), srcrect)};
+
+        Methods.Manager->OperateRect(Methods.Copy, destimg->GetTextureForRender(), nullptr,
+                                     tTVPRect(x, y, x + srcrect.get_width(),
+                                              y + srcrect.get_height()),
+                                     tRenderTexRectArray(src_tex));
+    }
+};
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
 // Cross fade transition handler
 //---------------------------------------------------------------------------
-// extern DWORD acctime;
-
 class tTVPCrossFadeTransHandler : public iTVPDivisibleTransHandler
 {
     tjs_int RefCount;
@@ -383,6 +537,8 @@ protected:
 
     tjs_int PhaseMax;
     tjs_int Phase; // current phase (0 thru PhaseMax)
+
+    tTVPTransBlender Blender;
 
 #ifdef TVP_TRANS_SHOW_FPS
     tjs_int Count;
@@ -409,8 +565,6 @@ public:
         Count = 0;
         ProcessTime = 0;
         BlendTime = 0;
-
-//		acctime = 0;
 #endif
         First = true;
     }
@@ -442,7 +596,6 @@ public:
     {
         if (Options)
             Options->Release();
-        options = options;
         Options = options;
         if (Options)
             Options->AddRef();
@@ -577,8 +730,6 @@ tjs_error tTVPCrossFadeTransHandler::StartProcess(tjs_uint64 tick)
                       ttstr((tjs_int)(ProcessTime * 100 / (tick - StartTick))));
             TVPAddLog(TJS_N("blend time / trans time (%) : ") +
                       ttstr((tjs_int)(BlendTime * 100 / (tick - StartTick))));
-            //			TVPAddLog(TJS_N("blt time / trans time (%) : ") +
-            //				ttstr((tjs_int)(acctime*100/(tick-StartTick))));
             tjs_int avgtime;
             avgtime = ProcessTime / Count;
             TVPAddLog(TJS_N("process time / update count : ") + ttstr(avgtime));
@@ -649,48 +800,10 @@ tjs_error tTVPCrossFadeTransHandler::Process(
 //---------------------------------------------------------------------------
 void tTVPCrossFadeTransHandler::Blend(tTVPDivisibleData* data)
 {
-    // blend
-    iTVPRenderMethod* method;
-    int opa_id;
-    if (TVPIsTypeUsingAlpha(DestLayerType))
-    {
-        static iTVPRenderMethod* _method =
-            TVPGetRenderManager()->GetRenderMethod("ConstAlphaBlend_SD_d");
-        static int _opa_id = _method->EnumParameterID("opacity");
-        method = _method;
-        opa_id = _opa_id;
-    }
-    else if (TVPIsTypeUsingAddAlpha(DestLayerType))
-    {
-        static iTVPRenderMethod* _method =
-            TVPGetRenderManager()->GetRenderMethod("ConstAlphaBlend_SD_a");
-        static int _opa_id = _method->EnumParameterID("opacity");
-        method = _method;
-        opa_id = _opa_id;
-    }
-    else
-    {
-        static iTVPRenderMethod* _method =
-            TVPGetRenderManager()->GetRenderMethod("ConstAlphaBlend_SD");
-        static int _opa_id = _method->EnumParameterID("opacity");
-        method = _method;
-        opa_id = _opa_id;
-    }
-    method->SetParameterOpa(opa_id, Phase);
-    tRenderTexRectArray::Element src_tex[] = {
-        tRenderTexRectArray::Element(data->Src1->GetTexture(),
-                                     tTVPRect(data->Src1Left, data->Src1Top,
-                                              data->Src1Left + data->Width,
-                                              data->Src1Top + data->Height)),
-        tRenderTexRectArray::Element(data->Src2->GetTexture(),
-                                     tTVPRect(data->Src2Left, data->Src2Top,
-                                              data->Src2Left + data->Width,
-                                              data->Src2Top + data->Height))};
-    TVPGetRenderManager()->OperateRect(method, data->Dest->GetTextureForRender(), nullptr,
-                                       tTVPRect(data->DestLeft, data->DestTop,
-                                                data->DestLeft + data->Width,
-                                                data->DestTop + data->Height),
-                                       tRenderTexRectArray(src_tex));
+    // blend via the current render manager (CPU/GPU path)
+    Blender.CrossFade(data->Dest, data->DestLeft, data->DestTop, data->Src1, data->Src1Left,
+                      data->Src1Top, data->Src2, data->Src2Left, data->Src2Top, data->Width,
+                      data->Height, Phase, DestLayerType);
 }
 //---------------------------------------------------------------------------
 tjs_error tTVPCrossFadeTransHandler::MakeFinalImage(
@@ -714,9 +827,6 @@ class tTVPUniversalTransHandler : public tTVPCrossFadeTransHandler
 
     tjs_int Vague;
     iTVPScanLineProvider* Rule;
-    // tjs_uint32 BlendTable[256];
-    iTVPRenderMethod* Method;
-    tjs_int MethodPhaseID, MethodVagueID;
 
 public:
     tTVPUniversalTransHandler(iTVPSimpleOptionProvider* options,
@@ -729,38 +839,6 @@ public:
         Vague = vague;
         Rule = rule;
         Rule->AddRef();
-
-        if (TVPIsTypeUsingAlpha(DestLayerType))
-        {
-            static iTVPRenderMethod* _method =
-                TVPGetRenderManager()->GetRenderMethod("UnivTransBlend_d");
-            static int phase_id = _method->EnumParameterID("phase"),
-                       vague_id = _method->EnumParameterID("vague");
-            Method = _method;
-            MethodPhaseID = phase_id;
-            MethodVagueID = vague_id;
-        }
-        else if (TVPIsTypeUsingAddAlpha(DestLayerType))
-        {
-            static iTVPRenderMethod* _method =
-                TVPGetRenderManager()->GetRenderMethod("UnivTransBlend_a");
-            static int phase_id = _method->EnumParameterID("phase"),
-                       vague_id = _method->EnumParameterID("vague");
-            Method = _method;
-            MethodPhaseID = phase_id;
-            MethodVagueID = vague_id;
-        }
-        else
-        {
-            static iTVPRenderMethod* _method =
-                TVPGetRenderManager()->GetRenderMethod("UnivTransBlend");
-            static int phase_id = _method->EnumParameterID("phase"),
-                       vague_id = _method->EnumParameterID("vague");
-            Method = _method;
-            MethodPhaseID = phase_id;
-            MethodVagueID = vague_id;
-        }
-        Method->SetParameterInt(MethodVagueID, vague);
     }
 
     ~tTVPUniversalTransHandler() { Rule->Release(); }
@@ -852,56 +930,22 @@ tjs_error tTVPUniversalTransHandler::StartProcess(tjs_uint64 tick)
     if (TJS_FAILED(er))
         return er;
 
-    // start one frame of the transition
-    Method->SetParameterInt(MethodPhaseID, Phase);
+    // start one frame of the transition（按当前渲染管理器设置相位/羽化）
+    Blender.SetUnivTransPhase(DestLayerType, Phase, Vague);
     return er;
 }
 //---------------------------------------------------------------------------
 void tTVPUniversalTransHandler::Blend(tTVPDivisibleData* data)
 {
     // blend the image according with the rule graphic
-    tRenderTexRectArray::Element src_tex[] = {
-        tRenderTexRectArray::Element(data->Src1->GetTexture(),
-                                     tTVPRect(data->Src1Left, data->Src1Top,
-                                              data->Src1Left + data->Width,
-                                              data->Src1Top + data->Height)),
-        tRenderTexRectArray::Element(data->Src2->GetTexture(),
-                                     tTVPRect(data->Src2Left, data->Src2Top,
-                                              data->Src2Left + data->Width,
-                                              data->Src2Top + data->Height)),
-        tRenderTexRectArray::Element(
-            Rule->GetTexture(),
-            tTVPRect(data->Left, data->Top, data->Left + data->Width, data->Top + data->Height))};
-    TVPGetRenderManager()->OperateRect(Method, data->Dest->GetTextureForRender(), nullptr,
-                                       tTVPRect(data->DestLeft, data->DestTop,
-                                                data->DestLeft + data->Width,
-                                                data->DestTop + data->Height),
-                                       tRenderTexRectArray(src_tex));
+    Blender.Universal(data->Dest, data->DestLeft, data->DestTop, data->Src1, data->Src1Left,
+                      data->Src1Top, data->Src2, data->Src2Left, data->Src2Top, Rule, data->Left,
+                      data->Top, data->Width, data->Height, DestLayerType);
 }
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
 // scroll transition handler
-//---------------------------------------------------------------------------
-static void TVPSLPCopyRect(iTVPScanLineProvider* destimg,
-                           tjs_int x,
-                           tjs_int y,
-                           iTVPScanLineProvider* srcimg,
-                           const tTVPRect& srcrect)
-{
-    // this function does not matter if the src==dest and copying area is
-    // overlapped.
-    // destimg and srcimg must be 32bpp bitmap.
-    static iTVPRenderMethod* method = TVPGetRenderManager()->GetRenderMethod("Copy");
-
-    tRenderTexRectArray::Element src_tex[] = {
-        tRenderTexRectArray::Element(srcimg->GetTexture(), srcrect)};
-
-    TVPGetRenderManager()->OperateRect(
-        method, destimg->GetTextureForRender(), nullptr,
-        tTVPRect(x, y, x + srcrect.get_width(), y + srcrect.get_height()),
-        tRenderTexRectArray(src_tex));
-}
 //---------------------------------------------------------------------------
 class tTVPScrollTransHandler : public tTVPCrossFadeTransHandler
 {
@@ -1124,18 +1168,19 @@ void tTVPScrollDivisibleData::Blend(tTVPScrollTransFrom from,
     }
 
     // copy to destination image
+    tTVPTransBlender blender;
     tTVPRect d;
     if (TVPIntersectRect(&d, rdest, rs1))
     {
         tjs_int dl = d.left - Left + DestLeft, dt = d.top - Top + DestTop;
         d.add_offsets(-src1left, -src1top);
-        TVPSLPCopyRect(Dest, dl, dt, Src1, d);
+        blender.CopyRect(Dest, dl, dt, Src1, d);
     }
     if (TVPIntersectRect(&d, rdest, rs2))
     {
         tjs_int dl = d.left - Left + DestLeft, dt = d.top - Top + DestTop;
         d.add_offsets(-src2left, -src2top);
-        TVPSLPCopyRect(Dest, dl, dt, Src2, d);
+        blender.CopyRect(Dest, dl, dt, Src2, d);
     }
 }
 //---------------------------------------------------------------------------

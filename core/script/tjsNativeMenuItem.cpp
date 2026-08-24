@@ -4,10 +4,11 @@
 #include "TVPScript.h"
 #include "TVPMsg.h"
 #include "TVPSystem.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "tjsDictionary.h"
 #include "tjsArray.h"
 #include "tjsNativeWindow.h"
+#include "WindowManager.h"
 #include "PlatformMutex.h"
 #include <map>
 
@@ -530,7 +531,7 @@ static bool _IsWindow(tTVInteger hWnd)
     tjs_int count = TVPGetWindowCount();
     for (tjs_int i = 0; i < count; ++i)
     {
-        if (TVPGetWindowListAt(i) == (tTJSNI_Window*)(hWnd))
+        if (TVPGetWindowListAt(i) == (TVPWindow*)(hWnd))
             return true;
     }
     return false;

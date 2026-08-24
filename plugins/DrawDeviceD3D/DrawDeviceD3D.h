@@ -57,7 +57,7 @@ class DrawDeviceD3D : public iTVPDrawDevice
     std::vector<class D3DEmotePlayer*> EmotePlayers;
 
     // ---- 窗口/设备 ----
-    iTVPWindow* Window = nullptr;
+    TVPWindow* Window = nullptr;
     krkrsdl3::iTVPRenderBackend* Backend = nullptr;
 
     tjs_int Width = 0, Height = 0;        // 画面（虚拟）尺寸
@@ -73,8 +73,8 @@ class DrawDeviceD3D : public iTVPDrawDevice
     tjs_int MaskMode = 0;
 
     // ---- 合成目标 ----
-    void* CompositeTarget = nullptr;      // 后端离屏目标（合成结果）
-    void* WindowTexture = nullptr;        // 窗口贴图（SW 后端用 SDL 纹理；GPU 后端为 CompositeTarget）
+    void* CompositeTarget = nullptr;      // 后端离屏目标（合成结果，compositor 体系贴图）
+    void* PresentScratchTexture = nullptr; // SW 后端呈现中转用贴图（目标 → 一般贴图）
     void* PrevCompositeTarget = nullptr;  // 转场快照（crossfade 用）
     void* ScratchTexture = nullptr;       // 软件 DrawBuffer 上传用的一般贴图
     bool TransitionActive = false;
@@ -89,7 +89,7 @@ public:
 
     // ---- iTVPDrawDevice ----
     void Destruct() override;
-    void SetWindowInterface(iTVPWindow* window) override;
+    void SetWindowInterface(TVPWindow* window) override;
     void AddLayerManager(iTVPLayerManager* manager) override;
     void RemoveLayerManager(iTVPLayerManager* manager) override;
     void SetDestRectangle(const tTVPRect& rect) override {}

@@ -1,7 +1,7 @@
 #include "tjsCommHead.h"
 #include "Platform.h"
 #include "PlatformFile.h"
-#include "MainWindowLayer.h"
+#include "WindowManager.h"
 #include "tjsNativeMenuItem.h"
 
 #include <android/asset_manager.h>

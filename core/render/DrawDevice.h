@@ -15,7 +15,7 @@
 #include "tvpinputdefs.h"
 #include "ComplexRect.h"
 
-class iTVPWindow;
+class TVPWindow;
 class tTJSNI_BaseLayer;
 
 /*[*/
@@ -40,7 +40,7 @@ public:
     //! @brief		(Window→DrawDevice) ウィンドウインターフェースを設定する
     //! @param		window		ウィンドウインターフェース
     //! @note		(TJSから) Window.drawDevice プロパティを設定した直後に呼ばれる。
-    virtual void SetWindowInterface(iTVPWindow* window) = 0;
+    virtual void SetWindowInterface(TVPWindow* window) = 0;
 
     //---- LayerManager の管理関連
     //! @brief		(Window→DrawDevice) レイヤマネージャを追加する
@@ -451,9 +451,13 @@ class tTVPBasicDrawDevice : public iTVPDrawDevice
 {
     typedef iTVPDrawDevice inherited;
 
-    iTVPWindow* Window;
+    TVPWindow* Window;
     iTVPLayerManager* Manager; //!< レイヤマネージャの配列
     tTVPRect DestRect;         //!< 描画先位置
+
+    // 呈现转化用：iTVPTexture2D（软渲染 DrawBuffer）→ compositor 一般贴图
+    void* ScratchTexture = nullptr;
+    tjs_int ScratchW = 0, ScratchH = 0;
 
 public:
     tTVPBasicDrawDevice(); //!< コンストラクタ
@@ -466,7 +470,7 @@ public:
     virtual void Destruct();
 
     //---- window interface 関連
-    virtual void SetWindowInterface(iTVPWindow* window);
+    virtual void SetWindowInterface(TVPWindow* window);
 
     //---- LayerManager の管理関連
     virtual void AddLayerManager(iTVPLayerManager* manager);

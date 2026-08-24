@@ -3,7 +3,7 @@
 #include "Platform.h"
 #include "D3DEmotePlayer.h"
 #include "LayerManager.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "tjsNativeLayer.h"
 #include "TVPSystem.h"
 
@@ -73,15 +73,14 @@ DrawDeviceD3D::DrawDeviceD3D(tjs_int w, tjs_int h) : Width(w), Height(h)
 
 DrawDeviceD3D::~DrawDeviceD3D()
 {
-    // 还原窗口贴图指针（CompositeTarget 的纹理由我们持有，不可被窗口层误删）
-    TVPSprite* spr = krkrsdl3::KRKR_Get_Current_Sprite();
-    if (spr && spr->texture && (spr->texture == WindowTexture ||
-                                (Backend && spr->texture == Backend->GetTargetTexture(CompositeTarget))))
-        spr->texture = nullptr;
+    // 解除窗口 sprite 对合成目标纹理的借用（由窗口侧管理，不再直接操作 sprite）；
+    // Window 析构时已经 SetWindowInterface(nullptr) 解除引用，此处安全
+    if (Window)
+        Window->ReleaseBorrowedTexture();
     if (Backend)
     {
-        if (WindowTexture)
-            Backend->DestroyWindowTexture(WindowTexture);
+        if (PresentScratchTexture)
+            Backend->DestroyTexture(PresentScratchTexture);
         if (CompositeTarget)
             Backend->DestroyTarget(CompositeTarget);
         if (PrevCompositeTarget)
@@ -116,7 +115,7 @@ bool DrawDeviceD3D::IsSoftwareBackend() const
 // ===========================================================================
 // iTVPDrawDevice —— 窗口 / 输入转发
 // ===========================================================================
-void DrawDeviceD3D::SetWindowInterface(iTVPWindow* window)
+void DrawDeviceD3D::SetWindowInterface(TVPWindow* window)
 {
     Window = window;
 }
@@ -624,41 +623,32 @@ void DrawDeviceD3D::RenderFrame()
 
 void DrawDeviceD3D::PresentToWindow()
 {
+    // 统一呈现路径：合成目标（compositor 体系的后端离屏目标）→ TVPWindow::PresentTexture
+    //   - GPU 后端：目标纹理直接呈现（sprite 别名，零拷贝；TVPRenderOnce 绘制之）
+    //   - 软件后端：目标（CPU 缓冲）→ 一般贴图中转 → 窗口上传（SW 保底路径）
+    // 窗口可见性/尺寸由 TVPWindow 统一管理，此处不再直接操作 sprite。
     EnsureBackend();
-    if (!Backend || !CompositeTarget)
-        return;
-    TVPSprite* spr = krkrsdl3::KRKR_Get_Current_Sprite();
-    if (!spr)
+    if (!Backend || !Window || !CompositeTarget)
         return;
 
     if (IsSoftwareBackend())
     {
-        // 软件后端：回读合成目标 → SDL 纹理上屏（SW 保底路径）
-        if (!WindowTexture)
-            WindowTexture = Backend->CreateWindowTexture(Width, Height);
-        if (!WindowTexture)
+        if (!PresentScratchTexture)
+            PresentScratchTexture = Backend->CreateTexture(Width, Height);
+        if (!PresentScratchTexture)
             return;
         int pitch = 0;
         uint8_t* pixels = Backend->LockTarget(CompositeTarget, pitch);
         if (pixels)
         {
-            Backend->UpdateWindowTexture(WindowTexture, pixels, Width, Height, pitch);
+            Backend->UpdateTexture(PresentScratchTexture, pixels, Width, Height, pitch);
             Backend->UnlockTarget(CompositeTarget);
         }
-        spr->texture = WindowTexture;
-        spr->width = Width;
-        spr->height = Height;
-        spr->isVisible = true;
+        Window->PresentTexture(PresentScratchTexture, Width, Height);
+        return;
     }
-    else
-    {
-        // GPU 后端：合成目标直接作为窗口贴图（零拷贝；TVPRenderOnce 绘制之）
-        void* t = Backend->GetTargetTexture(CompositeTarget);
-        spr->texture = t;
-        spr->width = Width;
-        spr->height = Height;
-        spr->isVisible = true;
-    }
+
+    Window->PresentTexture(Backend->GetTargetTexture(CompositeTarget), Width, Height);
 }
 
 void DrawDeviceD3D::Update()

@@ -4,9 +4,8 @@
 #include "tjsCommHead.h"
 #include "TVPApplication.h"
 #include "RenderManager.h"
-#include "WindowIntf.h"
+#include "TVPWindow.h"
 #include "Platform.h"
-#include "eventCallbackFun.h"
 #include "TVPSettings.h"
 #include "TVPCompositor.h"
 
