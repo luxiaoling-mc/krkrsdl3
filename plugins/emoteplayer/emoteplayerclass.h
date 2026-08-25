@@ -68,7 +68,7 @@ private:
     { \
         storage = v; \
     }
-
+// SeparateLayerAdaptor
 class SeparateLayerAdaptor : public tTJSDispatch
 {
 public:
@@ -95,6 +95,25 @@ public:
 private:
     tTJSNI_Layer* _this = nullptr;
     tjs_int _type = 0;
+};
+
+// D3DAdaptor
+class D3DAdaptor
+{
+public:
+    D3DAdaptor(
+        iTJSDispatch2* winRef, tjs_int width, tjs_int height, tjs_int orgX, tjs_int orgY);
+    ~D3DAdaptor();
+    void setClearColor(tjs_uint32 color);
+    void captureCanvas(iTJSDispatch2* targetLayer);
+    void unloadUnusedTextures();
+
+    // 直接用于绘制的GPU目标
+    tjs_int _width = 0, _height = 0;
+    tjs_int _orgX = 0, _orgY = 0;
+    uint32_t _clearColor = 0;
+    void* _target = nullptr;
+    void* _maskTarget = nullptr;
 };
 
 // EmotePlayer 和Player是一个玩意
@@ -217,8 +236,8 @@ private:
     // canvas（渲染目标句柄，由 core/render 的 2D 渲染器管理）
     void* _target = nullptr;
     void* _maskTarget = nullptr;
+    bool withD3DAdaptor = false;
     bool withoutAdaptor = false;
-    void resetTargetArea(tjs_int width, tjs_int height);
     // transform
     void updateTransMat();
     void ResetDrawArea(tjs_int width, tjs_int height);

@@ -31,6 +31,17 @@ NCB_REGISTER_SUBCLASS(SeparateLayerAdaptor)
     PROPERTY(parent);
 }
 
+NCB_REGISTER_SUBCLASS(D3DAdaptor)
+{
+    // D3DAdaptor就是一种GPU->CPU的回读机制
+    // 它不依赖DrawDeviceD3D
+    // 现在的emote已经是这种机制了，所以可以直接套壳
+    NCB_CONSTRUCTOR((iTJSDispatch2*, tjs_int, tjs_int, tjs_int, tjs_int));
+    NCB_METHOD(setClearColor);
+    NCB_METHOD(captureCanvas);
+    NCB_METHOD(unloadUnusedTextures);
+}
+
 NCB_REGISTER_SUBCLASS(EmotePlayer)
 {
     NCB_CONSTRUCTOR((ResourceManager*));
@@ -154,6 +165,7 @@ NCB_REGISTER_CLASS(Motion)
     NCB_SUBCLASS(EmotePlayer, EmotePlayer);
     NCB_SUBCLASS(Player, Player);
     NCB_SUBCLASS(SeparateLayerAdaptor, SeparateLayerAdaptor);
+    NCB_SUBCLASS(D3DAdaptor, D3DAdaptor);
 }
 
 static void emoteplayer_init()

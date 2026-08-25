@@ -295,6 +295,63 @@ void SeparateLayerAdaptor::checkDrawArea(tjs_int width, tjs_int height)
     }
 }
 
+D3DAdaptor::D3DAdaptor(
+    iTJSDispatch2* winRef, tjs_int width, tjs_int height, tjs_int orgX, tjs_int orgY)
+{
+    krkrsdl3::iTVPRenderBackend* renderer = krkrsdl3::TVPGetRenderBackend();
+    if (renderer)
+    {
+        _target = renderer->CreateTarget(width, height);
+        _maskTarget = renderer->CreateTarget(width, height);
+        _width = width;
+        _height = height;
+        _orgX = orgX;
+        _orgY = orgY;
+    }
+}
+D3DAdaptor::~D3DAdaptor()
+{
+    krkrsdl3::iTVPRenderBackend* renderer = krkrsdl3::TVPGetRenderBackend();
+    if (renderer)
+    {
+        if (_target)
+        {
+            renderer->DestroyTarget(_target);
+            _target = nullptr;
+        }
+        if (_maskTarget)
+        {
+            renderer->DestroyTarget(_maskTarget);
+            _maskTarget = nullptr;
+        }
+    }
+}
+void D3DAdaptor::setClearColor(tjs_uint32 color)
+{
+    _clearColor = color;
+}
+void D3DAdaptor::captureCanvas(iTJSDispatch2* targetLayer)
+{
+    tTJSNI_BaseLayer* ths = NULL;
+    if (targetLayer->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Layer::ClassID,
+                                       (iTJSNativeInstance**)&ths) < 0)
+        return;
+    krkrsdl3::iTVPRenderBackend* renderer = krkrsdl3::TVPGetRenderBackend();
+    if (!renderer)
+        return;
+    int pitch = 0;
+    uint8_t* pixels = renderer->LockTarget(_target, pitch);
+    tjs_uint8* buff = (tjs_uint8*)ths->GetMainImagePixelBufferForWrite();
+    if (buff && pixels)
+        std::memcpy(buff, pixels, (size_t)_width * _height * 4);
+    renderer->UnlockTarget(_target);
+    ths->Update();
+}
+void D3DAdaptor::unloadUnusedTextures()
+{
+    // 干啥的？
+}
+
 // 专门用来保存contain信息 两类节点mtn和shape
 tTJSNativeClass* TVPCreateNativeClass_TmpMotionObj(EmotePlayer* ptr, emotemotionref* obj);
 class TmpMotionObj : public tTJSNativeClass
@@ -752,13 +809,20 @@ void EmotePlayer::draw(iTJSDispatch2* objthis)
 {
     auto* self = ncbInstanceAdaptor<SeparateLayerAdaptor>::GetNativeInstance(objthis);
     tTJSNI_BaseLayer* ths = NULL;
+    D3DAdaptor* d3dAdaptor = NULL;
     if (self != nullptr)
     {
         ths = self->GetLayer();
         if (ths == NULL)
             return;
     }
-    else
+    if (ths == NULL)
+    {
+        d3dAdaptor = ncbInstanceAdaptor<D3DAdaptor>::GetNativeInstance(objthis);
+        if (d3dAdaptor != nullptr)
+            withD3DAdaptor = true;
+    }
+    if (d3dAdaptor == NULL && ths == NULL)
     {
         if (objthis->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Layer::ClassID,
                                            (iTJSNativeInstance**)&ths) < 0)
@@ -768,40 +832,68 @@ void EmotePlayer::draw(iTJSDispatch2* objthis)
 
     if (emtEngine._mainfile != nullptr && emtEngine._mainmotion != nullptr)
     {
-        ResetDrawArea(ths->GetWidth(), ths->GetHeight());
         // 渲染统一走 core/render 的 2D 渲染抽象（GL/软渲染选择在 core 内部完成）
         krkrsdl3::iTVPRenderBackend* renderer = krkrsdl3::TVPGetRenderBackend();
         if (!renderer)
             return;
         void* target = nullptr;
         void* maskTarget = nullptr;
-        if (withoutAdaptor)
+        if (withD3DAdaptor)
         {
-            target = _target;
-            maskTarget = _maskTarget;
+            target = d3dAdaptor->_target;
+            maskTarget = d3dAdaptor->_maskTarget;
+            _limitArea.width = d3dAdaptor->_width;
+            _limitArea.height = d3dAdaptor->_height;
+            // TODO 关于位置的锚定，后续再研究研究，如何进行全面的统一
+            _limitArea.originX = d3dAdaptor->_orgX - d3dAdaptor->_width / 2;
+            _limitArea.originY = d3dAdaptor->_orgY - d3dAdaptor->_height / 2;
+            _width = d3dAdaptor->_width;
+            _height = d3dAdaptor->_height;
+            if (emtEngine._mainfile != nullptr)
+            {
+                _limitArea.zMax = emtEngine.getZMax() * 2;
+            }
+            if (_limitArea.zMax < 30.0f)
+                _limitArea.zMax = 30.0f;
+            updateTransMat();
+            // D3D自己清理
+            renderer->SetTarget(target);
+            renderer->ClearTarget(true);
         }
         else
         {
-            self->checkDrawArea(ths->GetWidth(), ths->GetHeight());
-            target = self->target;
-            maskTarget = self->maskTarget;
+            ResetDrawArea(ths->GetWidth(), ths->GetHeight());
+            if (withoutAdaptor)
+            {
+                target = _target;
+                maskTarget = _maskTarget;
+            }
+            else
+            {
+                self->checkDrawArea(ths->GetWidth(), ths->GetHeight());
+                target = self->target;
+                maskTarget = self->maskTarget;
+            }
+            if (!target || !maskTarget)
+                return;
+            // 启用
+            renderer->SetTarget(target);
+            // isSelfClear: 自主清屏模式；否则由脚本 clear() 完成清屏
+            renderer->ClearTarget(isSelfClear);
         }
-        if (!target || !maskTarget)
-            return;
-
-        renderer->SetTarget(target);
-        // isSelfClear: 自主清屏模式；否则由脚本 clear() 完成清屏
-        renderer->ClearTarget(isSelfClear);
         // 使用emoteengine::draw进行绘制(使用progress阶段缓存的独立ref树)
         emtEngine.draw(renderer, target, _limitArea, maskTarget);
-        // 回读 CPU 像素并交给图层（GL 后端经 glReadPixels，软渲染后端零拷贝）
-        int pitch = 0;
-        uint8_t* pixels = renderer->LockTarget(target, pitch);
-        tjs_uint8* buff = (tjs_uint8*)ths->GetMainImagePixelBufferForWrite();
-        if (buff && pixels)
-            std::memcpy(buff, pixels, (size_t)_width * _height * 4);
-        renderer->UnlockTarget(target);
-        ths->Update();
+        if (!withD3DAdaptor)
+        {
+            // 回读 CPU 像素并交给图层（GL 后端经 glReadPixels，软渲染后端零拷贝）
+            int pitch = 0;
+            uint8_t* pixels = renderer->LockTarget(target, pitch);
+            tjs_uint8* buff = (tjs_uint8*)ths->GetMainImagePixelBufferForWrite();
+            if (buff && pixels)
+                std::memcpy(buff, pixels, (size_t)_width * _height * 4);
+            renderer->UnlockTarget(target);
+            ths->Update();
+        }
     }
 }
 
