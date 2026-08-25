@@ -826,10 +826,8 @@ void GLRenderBackend::SetBlendMode(int mode, const float* uniformColor)
             glBlendEquation(GL_FUNC_ADD);
             break;
         case 21:
-            // FillARGB/FillColor/FillMask：软件语义为覆盖写（无视 alpha 混合）。
-            // 若用 alpha 混合，透明色填充（如 0x00FFFFFF 中性色）无法覆盖旧内容，
-            // 会把图层白底留在目标上。
-            glDisable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glBlendEquation(GL_FUNC_ADD);
             break;
     }
 }

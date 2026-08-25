@@ -349,7 +349,14 @@ void D3DAdaptor::captureCanvas(iTJSDispatch2* targetLayer)
 }
 void D3DAdaptor::unloadUnusedTextures()
 {
-    // 干啥的？
+    // 做一下清屏操作
+    // D3D自己清理
+    krkrsdl3::iTVPRenderBackend* renderer = krkrsdl3::TVPGetRenderBackend();
+    if (renderer)
+    {
+        renderer->SetTarget(_target);
+        renderer->ClearTarget(true);
+    }
 }
 
 // 专门用来保存contain信息 两类节点mtn和shape
@@ -856,9 +863,6 @@ void EmotePlayer::draw(iTJSDispatch2* objthis)
             if (_limitArea.zMax < 30.0f)
                 _limitArea.zMax = 30.0f;
             updateTransMat();
-            // D3D自己清理
-            renderer->SetTarget(target);
-            renderer->ClearTarget(true);
         }
         else
         {

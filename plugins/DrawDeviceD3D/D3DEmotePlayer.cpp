@@ -441,7 +441,7 @@ void D3DEmotePlayer::Draw(void* compositeTarget)
         originX = (tjs_int)(((float)Device->GetWidth() * 0.5f + Layer->Matrix[12]) / sx);
         originY = (tjs_int)(((float)Device->GetHeight() * 0.5f + Layer->Matrix[13]) / sy);
     }
-    Impl->Player->drawToTarget(backend, Target, nullptr, true, limitW, limitH, originX, originY);
+    Impl->Player->drawToTarget(backend, Target, MaskTarget, true, limitW, limitH, originX, originY);
     void* tex = backend->GetTargetTexture(Target);
     if (!tex)
         return;

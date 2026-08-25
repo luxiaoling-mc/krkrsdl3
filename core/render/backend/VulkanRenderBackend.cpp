@@ -539,6 +539,15 @@ bool VulkanRenderBackend::CreateSwapchain(int width, int height)
     }
     swapchainExtent_ = extent;
 
+    // Android 的 Vulkan surface 可能通过 currentTransform 表示屏幕旋转
+    // （例如横屏 Activity 上得到 ROTATE_90/270 + 竖向 extent）。如果直接把
+    // preTransform 设为 currentTransform，却不在 shader/viewport 中补偿旋转，
+    // 会出现内容正确但方向未跟随横屏、宽度被压缩的问题。
+    // 优先请求 IDENTITY，让呈现引擎处理方向；不支持时才退回 currentTransform。
+    VkSurfaceTransformFlagBitsKHR preTransform = caps.currentTransform;
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+        preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
     uint32_t imageCount = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
         imageCount = caps.maxImageCount;
@@ -563,7 +572,7 @@ bool VulkanRenderBackend::CreateSwapchain(int width, int height)
     {
         swapInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
-    swapInfo.preTransform = caps.currentTransform;
+    swapInfo.preTransform = preTransform;
     swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     swapInfo.presentMode = presentMode;
     swapInfo.clipped = VK_TRUE;

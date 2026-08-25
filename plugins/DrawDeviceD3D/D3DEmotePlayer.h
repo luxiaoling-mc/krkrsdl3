@@ -23,7 +23,7 @@ class D3DEmotePlayer
     DrawDeviceD3D* Device = nullptr;
 
     void* Target = nullptr;      // 本播放器的离屏目标（合成 Front 平面时采样）
-    void* MaskTarget = nullptr;  // 蒙版目标（maskMode 启用时）
+    void* MaskTarget = nullptr;  // 蒙版目标
 
     class PlayerImpl* Impl = nullptr; // emoteplayer::EmotePlayer 包装（见 cpp）
 
