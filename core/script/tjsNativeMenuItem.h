@@ -102,7 +102,7 @@ public:
     void OnClick(void); // fire onClick event
 };
 //---------------------------------------------------------------------------
-iTJSDispatch2* TVPGetMenuDispatch(tTVInteger hWnd);
+iTJSDispatch2* TVPGetMenuDispatch(TVPWindow* hWnd);
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------

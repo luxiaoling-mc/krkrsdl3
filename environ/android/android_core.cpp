@@ -202,7 +202,7 @@ void TVPInvokeMenu(int x, int y, void* _menu)
     if(_menu) sdl_current_menu = static_cast<tTJSNI_MenuItem*>(_menu);
     else
     {
-        iTJSDispatch2 *menuobj = TVPGetMenuDispatch((tjs_intptr_t)TVPGetActiveWindow());
+        iTJSDispatch2 *menuobj = TVPGetMenuDispatch(TVPGetActiveWindow());
         if (!menuobj) return;
         menuobj->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
                                         tTJSNC_MenuItem::ClassID, (iTJSNativeInstance**)&sdl_current_menu);

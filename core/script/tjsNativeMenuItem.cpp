@@ -510,28 +510,28 @@ iTJSDispatch2* TVPCreateMenuItemObject(iTJSDispatch2* window)
 }
 //---------------------------------------------------------------------------
 
-static std::map<tTVInteger, iTJSDispatch2*> MENU_LIST;
-static void AddMenuDispatch(tTVInteger hWnd, iTJSDispatch2* menu)
+static std::map<TVPWindow*, iTJSDispatch2*> MENU_LIST;
+static void AddMenuDispatch(TVPWindow* hWnd, iTJSDispatch2* menu)
 {
     if (MENU_LIST.size() == 0)
         TJSAddStaticToRegisterHeap([](void*) { MENU_LIST.clear(); }, NULL);
-    MENU_LIST.insert(std::map<tTVInteger, iTJSDispatch2*>::value_type(hWnd, menu));
+    MENU_LIST.insert(std::map<TVPWindow*, iTJSDispatch2*>::value_type(hWnd, menu));
 }
-iTJSDispatch2* TVPGetMenuDispatch(tTVInteger hWnd)
+iTJSDispatch2* TVPGetMenuDispatch(TVPWindow* hWnd)
 {
-    std::map<tTVInteger, iTJSDispatch2*>::iterator i = MENU_LIST.find(hWnd);
+    std::map<TVPWindow*, iTJSDispatch2*>::iterator i = MENU_LIST.find(hWnd);
     if (i != MENU_LIST.end())
     {
         return i->second;
     }
     return NULL;
 }
-static bool _IsWindow(tTVInteger hWnd)
+static bool _IsWindow(TVPWindow* hWnd)
 {
     tjs_int count = TVPGetWindowCount();
     for (tjs_int i = 0; i < count; ++i)
     {
-        if (TVPGetWindowListAt(i) == (TVPWindow*)(hWnd))
+        if (TVPGetWindowListAt(i) == hWnd)
             return true;
     }
     return false;
@@ -539,15 +539,15 @@ static bool _IsWindow(tTVInteger hWnd)
 
 static void UpdateMenuList()
 {
-    std::map<tTVInteger, iTJSDispatch2*>::iterator i = MENU_LIST.begin();
+    std::map<TVPWindow*, iTJSDispatch2*>::iterator i = MENU_LIST.begin();
     for (; i != MENU_LIST.end();)
     {
-        tTVInteger hWnd = i->first;
+        TVPWindow* hWnd = i->first;
         bool exist = _IsWindow(hWnd);
         if (exist == false)
         {
             // 既になくなったWindow
-            std::map<tTVInteger, iTJSDispatch2*>::iterator target = i;
+            std::map<TVPWindow*, iTJSDispatch2*>::iterator target = i;
             i++;
             iTJSDispatch2* menu = target->second;
             MENU_LIST.erase(target);
@@ -566,12 +566,14 @@ class WindowMenuProperty
                                           const tjs_char* membername,
                                           tjs_uint32* hint,
                                           tTJSVariant* result,
-                                          iTJSDispatch2* objthis){tTJSVariant var;
-if (TJS_FAILED(objthis->PropGet(0, TJS_N("HWND"), NULL, &var, objthis)))
-{
+                                          iTJSDispatch2* objthis){
+tTJSNI_Window* winInst = NULL;
+if (!objthis ||
+    objthis->NativeInstanceSupport(
+        TJS_NIS_GETINSTANCE, tTJSNC_Window::ClassID, (iTJSNativeInstance**)&winInst) < 0 ||
+    winInst == NULL)
     return TJS_E_INVALIDOBJECT;
-}
-tTVInteger hWnd = var.AsInteger();
+TVPWindow* hWnd = winInst->GetWindow();
 iTJSDispatch2* menu = TVPGetMenuDispatch(hWnd);
 if (menu == NULL)
 {
