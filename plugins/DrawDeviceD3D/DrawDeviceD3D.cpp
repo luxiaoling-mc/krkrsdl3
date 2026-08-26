@@ -592,7 +592,11 @@ void DrawDeviceD3D::RenderFrame()
         if (p && p->IsActive())
             p->Draw(CompositeTarget);
     }
-    if (LayerManagerIndex >= 0 && LayerManagerIndex < (tjs_int)Managers.size())
+    if (LayerDrawIndex >= 1 && LayerDrawIndex < (tjs_int)Managers.size())
+    {
+        ComposeLayerManager(LayerDrawIndex, CompositeTarget);
+    }
+    if (LayerManagerIndex == 3 && LayerManagerIndex < Managers.size())
     {
         ComposeLayerManager(LayerManagerIndex, CompositeTarget);
     }
@@ -752,6 +756,7 @@ void DrawDeviceD3D::stopTransition()
     {
         Backend->DestroyTarget(PrevCompositeTarget);
         PrevCompositeTarget = nullptr;
+        LayerDrawIndex = (LayerDrawIndex == 1 ? 2 : 1);
     }
 }
 

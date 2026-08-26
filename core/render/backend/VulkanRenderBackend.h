@@ -26,8 +26,6 @@
 //---------------------------------------------------------------------------
 namespace krkrsdl3
 {
-#if defined(_KRKRSDL3_USE_SDL3) && defined(_KRKRSDL3_USE_VULKAN)
 iTVPRenderBackend* CreateVulkanRenderBackend(VkInstance _instance, VkSurfaceKHR _surface);
 bool VulkanRenderBackendAvailable();
-#endif
 } // namespace krkrsdl3

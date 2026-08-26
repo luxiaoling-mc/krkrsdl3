@@ -64,7 +64,7 @@ class DrawDeviceD3D : public iTVPDrawDevice
     tjs_int ScreenX = 0, ScreenY = 0;     // setScreenRect
     tjs_int ScreenW = 0, ScreenH = 0;
     tjs_int OffsetX = 0, OffsetY = 0;     // setOffset
-    tjs_int LayerManagerIndex = 0;
+    tjs_int LayerManagerIndex = 0;        // 事件传递索引
     tjs_uint32 ClearColor = 0xFF000000;
     tjs_int StretchType = 0;
     tjs_real BicubicParam = 0.5;
@@ -73,6 +73,7 @@ class DrawDeviceD3D : public iTVPDrawDevice
     tjs_int MaskMode = 0;
 
     // ---- 合成目标 ----
+    tjs_int LayerDrawIndex = 1;           // back<->fore 切换索引 通过Trans进行 1<->2切换
     void* CompositeTarget = nullptr;      // 后端离屏目标（合成结果，compositor 体系贴图）
     void* PresentScratchTexture = nullptr; // SW 后端呈现中转用贴图（目标 → 一般贴图）
     void* PrevCompositeTarget = nullptr;  // 转场快照（crossfade 用）
@@ -193,7 +194,6 @@ private:
     void EnsureBackend();
     void RenderFrame();
     void ComposeLayerManager(int index, void* target);
-    void ComposeD3DLayers(void* target);
     void PresentToWindow();
     bool IsSoftwareBackend() const;
     void DrawQuadTo(void* target, void* srcTexture, float x, float y, float w, float h,

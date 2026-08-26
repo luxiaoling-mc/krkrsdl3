@@ -1,5 +1,3 @@
-#if defined(_KRKRSDL3_USE_SDL3) && defined(_KRKRSDL3_USE_VULKAN)
-
 #include "VulkanRenderBackend.h"
 
 #include "tjsCommHead.h"
@@ -1261,6 +1259,14 @@ void VulkanRenderBackend::UpdateTextureInternal(Texture* texture, const uint8_t*
 {
     if (!texture || !texture->mapped || !pixels)
         return;
+
+    // 线性贴图可能正被尚未提交的 mesh/layer 命令采样。
+    // DrawDeviceD3D::ComposeLayerManager 会复用同一个 ScratchTexture 依次上传多个
+    // LayerManager；如果这里直接覆盖 mapped 内存，前一个尚未执行的 draw 会采到
+    // 后一次上传的内容。LockTarget 调试回读之所以能“修好”，只是因为它在两次
+    // 上传之间提交并等待了命令。正式路径在覆盖贴图前显式提交即可避免依赖回读。
+    FlushMeshCommands();
+
     // 线性布局图像按行写入（pitch 可能含对齐填充）
     for (int y = 0; y < height; y++)
     {
@@ -2863,5 +2869,3 @@ struct VulkanRenderBackendAutoRegister
 } // namespace
 
 } // namespace krkrsdl3
-
-#endif // _KRKRSDL3_USE_SDL3 && _KRKRSDL3_USE_VULKAN
