@@ -24,7 +24,7 @@
 // 呈现模型：
 //   - 每个 LayerManager 的 DrawBuffer 为软件位图（与渲染基准一致）
 //   - 每帧：软件 DrawBuffer 上传 → 与独立 D3D 层（drawPlane Both/Front/Back、
-//     frontIndex 排序）合成到合成目标 → D3DEmotePlayer（GPU 直通动画）
+//     frontIndex 排序）合成到合成目标；D3DEmotePlayer 先绘制到所属 D3DLayer
 //     → 转场交叉淡化
 //   - 合成目标作为窗口贴图交给后端上屏（GPU 后端零拷贝；
 //     软件后端回读为 SDL 纹理，保底）
@@ -53,8 +53,6 @@ class DrawDeviceD3D : public iTVPDrawDevice
 
     // ---- 独立 D3D 层（D3DLayer，不在 LayerManager 树内）----
     std::vector<class D3DLayer*> D3DLayers;
-    // ---- D3DEmotePlayer（GPU 直通动画）----
-    std::vector<class D3DEmotePlayer*> EmotePlayers;
 
     // ---- 窗口/设备 ----
     TVPWindow* Window = nullptr;
@@ -182,8 +180,6 @@ public:
     // ---- 内部 ----
     void RegisterD3DLayer(class D3DLayer* layer) { D3DLayers.push_back(layer); }
     void UnregisterD3DLayer(class D3DLayer* layer);
-    void RegisterEmotePlayer(class D3DEmotePlayer* p) { EmotePlayers.push_back(p); }
-    void UnregisterEmotePlayer(class D3DEmotePlayer* p);
     krkrsdl3::iTVPRenderBackend* GetBackend() { return Backend; }
     tjs_int GetWidth() const { return Width; }
     tjs_int GetHeight() const { return Height; }
@@ -230,6 +226,8 @@ public:
     tjs_int backIndex = 0;
     float Matrix[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::vector<class D3DPicture*> Pictures;
+    void* EmoteTarget = nullptr;
+    void* EmoteMaskTarget = nullptr;
 
     D3DLayer(iTJSDispatch2* d3dDeviceObj, iTJSDispatch2* scriptObject);
     ~D3DLayer();
@@ -239,6 +237,8 @@ public:
                    tjs_real m41, tjs_real m42, tjs_real m43, tjs_real m44);
     void AddPicture(class D3DPicture* pic);
     void RemovePicture(class D3DPicture* pic);
+    void DrawEmoteTarget(void* target);
+    void* GetEmoteTarget() const { return EmoteTarget; }
     tjs_int getDrawPlane() { return drawPlane; }
     void setDrawPlane(tjs_int v) { drawPlane = v; }
     tjs_int getFrontIndex() { return frontIndex; }

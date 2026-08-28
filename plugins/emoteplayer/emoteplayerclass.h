@@ -4,6 +4,7 @@
 #include "tjsNative.h"
 
 #include <map>
+#include <vector>
 #include "emotefile.h"
 #include "emoterunner.h"
 
@@ -42,6 +43,15 @@ public:
     ResourceManager(iTJSDispatch2* kagWindow, tjs_int cacheSize);
     ~ResourceManager();
 
+    void AddRef()
+    {
+        ++RefCount;
+    }
+    void Release()
+    {
+        if (RefCount > 0 && --RefCount == 0)
+            delete this;
+    }
     tTJSVariant load(tTJSString path);
     void unload(tTJSString path);
     void unloadAll();
@@ -55,6 +65,7 @@ public:
     std::map<ttstr, emotefile*> cacheData;
 
 private:
+    tjs_int RefCount = 1;
     inline static tjs_int _decryptkey = 0;
     inline static tTJSVariantClosure _decryptClo = NULL;
 };
@@ -128,6 +139,16 @@ public:
 
     EmotePlayer(ResourceManager* resourceManager) : _resourceManager(resourceManager){};
     ~EmotePlayer();
+
+    void AddRef()
+    {
+        ++RefCount;
+    }
+    void Release()
+    {
+        if (RefCount > 0 && --RefCount == 0)
+            delete this;
+    }
 
     property_marco(playing, bool, _playing);
     property_marco(allplaying, bool, _allplaying);
@@ -226,6 +247,7 @@ protected:
     bool isMotion = false;
 
 private:
+    tjs_int RefCount = 1;
     // runtime
     ResourceManager* _resourceManager;
     emoteengine emtEngine;

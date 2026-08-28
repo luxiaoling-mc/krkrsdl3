@@ -3,6 +3,8 @@
 #include "tjsCommHead.h"
 #include "DrawDeviceD3D.h"
 
+namespace emoteplayer { class ResourceManager; class EmotePlayer; }
+
 //---------------------------------------------------------------------------
 // D3DEmotePlayer —— emoteplayer 的 D3D 直通播放器
 //
@@ -22,9 +24,6 @@ class D3DEmotePlayer
     class D3DLayer* Layer = nullptr;
     DrawDeviceD3D* Device = nullptr;
 
-    void* Target = nullptr;      // 本播放器的离屏目标（合成 Front 平面时采样）
-    void* MaskTarget = nullptr;  // 蒙版目标
-
     class PlayerImpl* Impl = nullptr; // emoteplayer::EmotePlayer 包装（见 cpp）
 
     bool ShowFlag = false;
@@ -37,9 +36,13 @@ class D3DEmotePlayer
 
 public:
     D3DEmotePlayer(iTJSDispatch2* d3dlayer);
+    D3DEmotePlayer(iTJSDispatch2* d3dlayer, emoteplayer::ResourceManager* sharedRM, emoteplayer::EmotePlayer* sharedPlayer);
     ~D3DEmotePlayer();
 
-    void load(tTJSString file);
+    static tjs_error load(tTJSVariant* result,
+                              tjs_int numparams,
+                              tTJSVariant** param,
+                              D3DEmotePlayer* objthis);
     void show() { ShowFlag = true; }
     tTJSVariant clone(iTJSDispatch2* newlayer);
     void skip();
@@ -85,8 +88,8 @@ public:
     void finalize();
 
     // ---- 供 DrawDeviceD3D 合成 ----
-    void Draw(void* compositeTarget);
-    void* GetTarget() { return Target; }
+    void DrawToTarget(void* target, void* maskTarget);
+    void* GetTarget() { return Layer ? Layer->GetEmoteTarget() : nullptr; }
     bool IsActive() { return ShowFlag; }
 };
 

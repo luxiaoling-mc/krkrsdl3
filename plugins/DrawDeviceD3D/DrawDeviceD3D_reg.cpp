@@ -143,7 +143,7 @@ NCB_REGISTER_CLASS(D3DPicture)
 NCB_REGISTER_CLASS(D3DEmotePlayer)
 {
     NCB_CONSTRUCTOR((iTJSDispatch2*));
-    NCB_METHOD(load);
+    RawCallback("load", &Class::load, 0); // 可变参数函数
     NCB_METHOD(show);
     NCB_METHOD(clone);
     NCB_METHOD(skip);

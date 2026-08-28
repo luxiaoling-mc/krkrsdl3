@@ -579,19 +579,20 @@ void DrawDeviceD3D::RenderFrame()
     // DrawBuffer（消息/UI），对应非 D3D 的层序（世界层 absolute≈0..N < 消息 1M < uibase 5M）；
     // DrawBuffer 透明区域露出世界层。
     for (auto* l : frontLayers)
+    {
         DrawD3DLayerPictures(this, CompositeTarget, l, (float)OffsetX, (float)OffsetY);
+        l->DrawEmoteTarget(CompositeTarget);
+    }
     // Back 平面世界层（裏画面）仅在转场期间作为转场源参与合成
     if (TransitionActive && TransitionProgress < 1.0f)
     {
         for (auto* l : backLayers)
+        {
             DrawD3DLayerPictures(this, CompositeTarget, l, (float)OffsetX, (float)OffsetY);
+            l->DrawEmoteTarget(CompositeTarget);
+        }
     }
-    // D3DEmotePlayer（GPU 直通动画）
-    for (auto* p : EmotePlayers)
-    {
-        if (p && p->IsActive())
-            p->Draw(CompositeTarget);
-    }
+    // EmotePlayer 属于其所属的 D3DLayer，由 D3DLayer 在对应平面绘制。
     if (LayerDrawIndex >= 1 && LayerDrawIndex < (tjs_int)Managers.size())
     {
         ComposeLayerManager(LayerDrawIndex, CompositeTarget);
@@ -891,6 +892,15 @@ D3DLayer::~D3DLayer()
             p->Layer = nullptr;
     }
     Pictures.clear();
+    if (Device && Device->GetBackend())
+    {
+        if (EmoteTarget)
+            Device->GetBackend()->DestroyTarget(EmoteTarget);
+        if (EmoteMaskTarget)
+            Device->GetBackend()->DestroyTarget(EmoteMaskTarget);
+    }
+    EmoteTarget = nullptr;
+    EmoteMaskTarget = nullptr;
 }
 
 void D3DLayer::setMatrix(tjs_real m11, tjs_real m12, tjs_real m13, tjs_real m14, tjs_real m21,
@@ -932,6 +942,18 @@ void D3DLayer::RemovePicture(class D3DPicture* pic)
             break;
         }
     }
+}
+
+void D3DLayer::DrawEmoteTarget(void* target)
+{
+    if (!EmoteTarget || !Device || !Device->GetBackend())
+        return;
+    void* tex = Device->GetBackend()->GetTargetTexture(EmoteTarget);
+    if (!tex)
+        return;
+    Device->GetBackend()->SetTarget(target);
+    Device->GetBackend()->LayerSetBlend(krkrsdl3::iTVPRenderBackend::LBM_ALPHA, 1.0f, nullptr);
+    Device->GetBackend()->LayerDrawRect(tex, 0, 0, (float)Device->GetWidth(), (float)Device->GetHeight());
 }
 
 void D3DLayer::finalize()
@@ -1044,18 +1066,6 @@ void DrawDeviceD3D::UnregisterD3DLayer(class D3DLayer* layer)
         if (*it == layer)
         {
             D3DLayers.erase(it);
-            break;
-        }
-    }
-}
-
-void DrawDeviceD3D::UnregisterEmotePlayer(class D3DEmotePlayer* p)
-{
-    for (auto it = EmotePlayers.begin(); it != EmotePlayers.end(); ++it)
-    {
-        if (*it == p)
-        {
-            EmotePlayers.erase(it);
             break;
         }
     }
