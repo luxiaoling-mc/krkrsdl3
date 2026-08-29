@@ -54,6 +54,10 @@ static bool TVPCreateWindowForBackend(const std::string& renderer)
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, TVPSettings.window_width);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, TVPSettings.window_height);
     Uint64 flags = SDL_WINDOW_RESIZABLE;
+#if defined(_KRKRSDL3_IOS)
+    flags |= SDL_WINDOW_FULLSCREEN;
+    flags &= ~SDL_WINDOW_RESIZABLE;
+#endif
     if (renderer == "opengl")
         flags |= SDL_WINDOW_OPENGL;
     else if (renderer == "vulkan")
@@ -104,10 +108,12 @@ static bool TVPInitRenderBackend()
         }
         // 使用SDL3上下文
 #if !defined(_KRKRSDL3_EMSCRIPTEN)
-#if _KRKRSDL3_GL
+#if defined(_KRKRSDL3_GL)
         if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
 #elif defined(_KRKRSDL3_GLES)
         if (!gladLoadEGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
+#else
+        if (false)
 #endif
         {
             SDL_Log("Failed to initialize GLAD");
@@ -454,7 +460,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
             krkrsdl3::KRKR_Trig_TextInput(data);
             break;
         }
-#if defined(_KRKRSDL3_WINDOWS) || defined(_KRKRSDL3_LINUX) || defined(_KRKRSDL3_EMSCRIPTEN)
+#if defined(_KRKRSDL3_WINDOWS) || defined(_KRKRSDL3_LINUX) || defined(_KRKRSDL3_EMSCRIPTEN)  || defined(_KRKRSDL3_MACOS)
         // 鼠标事件
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         {
