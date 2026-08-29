@@ -575,16 +575,26 @@ void DrawDeviceD3D::RenderFrame()
     // 其它 manager 属于子窗口/辅助窗口，非 D3D 模式下不参与主窗口显示，
     // 若一并合成会以空白白底覆盖主画面。
    
-    // 先画 D3D 世界层（Front 平面 = 表画面世界层），再在其上合成 LayerManager
-    // DrawBuffer（消息/UI），对应非 D3D 的层序（世界层 absolute≈0..N < 消息 1M < uibase 5M）；
-    // DrawBuffer 透明区域露出世界层。
+    // 表/裏页面由 LayerDrawIndex 在 1 <-> 2 之间翻转：
+    //   - 平时绘制 LayerDrawIndex 指向的当前页面；
+    //   - startTransition() 已把开始转场前的完整当前画面保存到 PrevCompositeTarget；
+    //   - 转场进行中，当前帧必须先绘制“下一页”（LayerDrawIndex 的另一侧），
+    //     再把 PrevCompositeTarget 以 1-progress 叠上去。
+    // 如果转场中仍绘制 LayerDrawIndex 本身，画面会一直停在旧页，直到 stopTransition()
+    // 翻转索引后才瞬间变成新页，看不到过渡。
+    tjs_int activeLayerDrawIndex = LayerDrawIndex;
+    if (TransitionActive)
+        activeLayerDrawIndex = (LayerDrawIndex == 1 ? 2 : 1);
+
+    // 先画 D3D 世界层，再在其上合成 LayerManager DrawBuffer（消息/UI）。
+    // DrawBuffer 透明区域露出世界层。Back 平面不是“旧画面源”——旧画面已经在
+    // PrevCompositeTarget 里；转场期间也应按 activeLayerDrawIndex 绘制下一页。
     for (auto* l : frontLayers)
     {
         DrawD3DLayerPictures(this, CompositeTarget, l, (float)OffsetX, (float)OffsetY);
         l->DrawEmoteTarget(CompositeTarget);
     }
-    // Back 平面世界层（裏画面）仅在转场期间作为转场源参与合成
-    if (TransitionActive && TransitionProgress < 1.0f)
+    if (activeLayerDrawIndex == 2)
     {
         for (auto* l : backLayers)
         {
@@ -593,16 +603,18 @@ void DrawDeviceD3D::RenderFrame()
         }
     }
     // EmotePlayer 属于其所属的 D3DLayer，由 D3DLayer 在对应平面绘制。
-    if (LayerDrawIndex >= 1 && LayerDrawIndex < (tjs_int)Managers.size())
+    if (activeLayerDrawIndex >= 1 && activeLayerDrawIndex < (tjs_int)Managers.size())
     {
-        ComposeLayerManager(LayerDrawIndex, CompositeTarget);
+        ComposeLayerManager(activeLayerDrawIndex, CompositeTarget);
     }
     if (LayerManagerIndex == 3 && LayerManagerIndex < Managers.size())
     {
         ComposeLayerManager(LayerManagerIndex, CompositeTarget);
     }
 
-    // 转场交叉淡化：结果 = prev*(1-p) + current*p
+    // 转场交叉淡化：结果 = prev*(1-p) + next*p。
+    // 这里 next 已经完整绘入 CompositeTarget；再叠加 prev*(1-p)，视觉上等价于
+    // 从开始快照逐渐露出下一页。
     if (TransitionActive && PrevCompositeTarget && TransitionProgress < 1.0f)
     {
         void* prevTex = Backend->GetTargetTexture(PrevCompositeTarget);
@@ -621,9 +633,9 @@ void DrawDeviceD3D::RenderFrame()
             Backend->SetBlendMode(0, nullptr);
             Backend->DrawMesh(v, 4, idx, 6, prevTex, opa);
         }
-        if (TransitionProgress >= 1.0f)
-            stopTransition();
     }
+    if (TransitionActive && TransitionProgress >= 1.0f)
+        stopTransition();
 }
 
 void DrawDeviceD3D::PresentToWindow()
