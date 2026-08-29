@@ -26,12 +26,8 @@ void TVPAbortApplication(int code)
 
 //---------------------------------------------------------------------------
 #if defined(__GNUC__) || defined(__clang__)
-#ifndef _KRKRSDL3_ANDROID
-#ifndef _KRKRSDL3_EMSCRIPTEN
-#if !(defined(_KRKRSDL3_OHOS) || defined(_KRKRSDL3_IOS)) || defined(__x86_64__)
+#if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
-#endif
-#endif
 #endif
 #endif
 #ifdef _KRKRSDL3_WINDOWS

@@ -225,7 +225,7 @@ static void ProcessEvent(SDL_Event* event)
             krkrsdl3::KRKR_Trig_TextInput(data);
             break;
         }
-#if defined(_KRKRSDL3_WINDOWS) || defined(_KRKRSDL3_LINUX) || defined(_KRKRSDL3_EMSCRIPTEN)
+#if defined(_KRKRSDL3_WINDOWS) || defined(_KRKRSDL3_LINUX) || defined(_KRKRSDL3_EMSCRIPTEN)  || defined(_KRKRSDL3_MACOS)
         case SDL_MOUSEBUTTONDOWN:
         {
             tTVPMouseButton tmp = mbX1;
@@ -354,7 +354,7 @@ int SDL_main(int argc, char* argv[])
         tvp_glContext = SDL_GL_CreateContext(tvp_window);
         if (tvp_glContext == NULL)
             return 1;
-#if _KRKRSDL3_GL
+#if defined(_KRKRSDL3_GL)
         if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
 #elif !defined(_KRKRSDL3_EMSCRIPTEN)
         if (!gladLoadEGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
