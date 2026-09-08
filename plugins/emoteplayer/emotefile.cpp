@@ -490,7 +490,8 @@ emoteframe::emoteframe(emotefile* filePtr, uint32_t startOffset) : _filePtr(file
         it = _rootData.find("color");
         if (it != _rootData.end())
         {
-            filePtr->parseNumber(color, it->second);
+            // 只有 PSB 真正写了 color 才置位。缺省 0 会被当成黑色调制。
+            hasColor = filePtr->parseNumber(color, it->second);
         }
         // opa
         it = _rootData.find("opa");
@@ -2696,8 +2697,43 @@ bool emotefile::readIconTobuffer(uint8_t* buff, uint32_t buffSize, uint32_t pitc
     }
     else if (strcmp(ic->compress.c_str(), "none") == 0)
     {
-        uint32_t cpySize = std::min(chunkLengths.at(ic->pixel), buffSize);
-        memcpy(buff, srcbuff, cpySize);
+        if (ic->pal >= 0)
+        {
+            // Uncompressed indexed images still require palette expansion.
+            // Copying the index bytes as RGBA collapses M2 hair/stroke to a few faint rows.
+            if (ic->pal >= static_cast<int32_t>(chunkLengths.size()) || ic->width <= 0 ||
+                ic->height <= 0 || pitch == 0)
+            {
+                delete[] srcbuff;
+                return false;
+            }
+            const uint32_t paletteSize = chunkLengths.at(static_cast<size_t>(ic->pal));
+            std::vector<uint8_t> palette(paletteSize);
+            filePtr->SetPosition(_header.offsetChunkData + chunkOffsets.at(static_cast<size_t>(ic->pal)));
+            filePtr->ReadBuffer(palette.data(), palette.size());
+
+            const uint32_t width = static_cast<uint32_t>(ic->width);
+            const uint32_t pixelCount = std::min(
+                chunkLengths.at(static_cast<size_t>(ic->pixel)),
+                static_cast<uint32_t>(ic->width * ic->height));
+            for (uint32_t i = 0; i < pixelCount; ++i)
+            {
+                const size_t destination = static_cast<size_t>(i / width) * pitch +
+                                           static_cast<size_t>(i % width) * 4;
+                if (destination + 4 > buffSize)
+                    break;
+                const size_t paletteOffset = static_cast<size_t>(srcbuff[i]) * 4;
+                if (paletteOffset + 4 <= palette.size())
+                    memcpy(buff + destination, palette.data() + paletteOffset, 4);
+                else
+                    memset(buff + destination, 0, 4);
+            }
+        }
+        else
+        {
+            uint32_t cpySize = std::min(chunkLengths.at(ic->pixel), buffSize);
+            memcpy(buff, srcbuff, cpySize);
+        }
     }
     else
     {

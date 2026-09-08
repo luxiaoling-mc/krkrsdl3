@@ -59,7 +59,8 @@ public:
                   const uint16_t* indices,
                   int indexCount,
                   void* texture,
-                  float opacity) override;
+                  float opacity,
+                  const float* colorModulation = nullptr) override;
 
     // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
     void LayerSetBlend(int method, float opacity, const float* uniformColor) override;

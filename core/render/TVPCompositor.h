@@ -104,12 +104,15 @@ public:
     // uniformColor 仅 mode 21 使用，可为 nullptr
     virtual void SetBlendMode(int mode, const float* uniformColor = nullptr) = 0;
     // vertices: 交错 (x, y, u, v)，每顶点 4 个 float（NDC + UV）
+    // colorModulation：采样后乘到纹素上；nullptr 视为 (1,1,1,1)。
+    // emote PSB 的中性 frame.color 是 0xff808080，调用方应传 identity，不要把 128/255 当染色。
     virtual void DrawMesh(const float* vertices,
                           int vertexCount,
                           const uint16_t* indices,
                           int indexCount,
                           void* texture,
-                          float opacity) = 0;
+                          float opacity,
+                          const float* colorModulation = nullptr) = 0;
 
     // ---- Layer 合成（图层合成路径，供 DrawDeviceD3D 的 GPU RenderManager 使用）----
     // 与 2D 网格（DrawMesh，emoteplayer 用）的区别：混合公式遵循软件 RenderManager

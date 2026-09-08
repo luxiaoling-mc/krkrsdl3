@@ -428,7 +428,8 @@ void SWRenderBackend::DrawMesh(const float* vertices,
                                const uint16_t* indices,
                                int indexCount,
                                void* handle,
-                               float opacity)
+                               float opacity,
+                               const float* colorModulation)
 {
     if (skipDraw_ || !currentTarget_ || !vertices || !indices || vertexCount <= 0 || indexCount <= 0)
         return;
@@ -453,6 +454,8 @@ void SWRenderBackend::DrawMesh(const float* vertices,
 
     ColorRGBA uniformColor = {(uint8_t)(uniformColor_[0] * 255), (uint8_t)(uniformColor_[1] * 255),
                               (uint8_t)(uniformColor_[2] * 255), (uint8_t)(uniformColor_[3] * 255)};
+    const float whiteModulation[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float* modulation = colorModulation ? colorModulation : whiteModulation;
 
     for (int idx = 0; idx + 2 < indexCount; idx += 3)
     {
@@ -536,8 +539,12 @@ void SWRenderBackend::DrawMesh(const float* vertices,
 
                     if (!hasStencil || ((maskRow[px] >> 24) & 0xFF) >= 128)
                     {
-                        row[px] = BlendPixels(texData[(size_t)ty * texW + tx], row[px], blendMode_,
-                                              opacity, uniformColor);
+                        ColorRGBA src = texData[(size_t)ty * texW + tx];
+                        src.r = static_cast<uint8_t>(src.r * modulation[0] + 0.5f);
+                        src.g = static_cast<uint8_t>(src.g * modulation[1] + 0.5f);
+                        src.b = static_cast<uint8_t>(src.b * modulation[2] + 0.5f);
+                        src.a = static_cast<uint8_t>(src.a * modulation[3] + 0.5f);
+                        row[px] = BlendPixels(src, row[px], blendMode_, opacity, uniformColor);
                     }
                 }
 

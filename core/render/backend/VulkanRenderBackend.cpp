@@ -47,7 +47,7 @@ struct WindowPushConstants
 };
 static_assert(sizeof(WindowPushConstants) == 24, "window push constant layout");
 
-// 2D 网格 push constant：与 vk2d_quad.frag 的 std140 布局一致（48 字节）
+// 2D 网格 push constant：与 vk2d_quad.frag 的 std140 布局一致（64 字节）
 struct MeshPushConstants
 {
     float viewportX, viewportY; // vec2 @0
@@ -56,8 +56,9 @@ struct MeshPushConstants
     float opa;                  // @16
     float pad[3];               // @20-31
     float uniformColor[4];      // @32（16 字节对齐）
+    float colorModulation[4];   // @48（16 字节对齐）
 };
-static_assert(sizeof(MeshPushConstants) == 48, "mesh push constant layout");
+static_assert(sizeof(MeshPushConstants) == 64, "mesh push constant layout");
 
 // Layer 合成 push constant：与 vk2d_layer.frag 的 std140 布局一致（32 字节）
 struct LayerPushConstants
@@ -148,7 +149,8 @@ public:
                   const uint16_t* indices,
                   int indexCount,
                   void* texture,
-                  float opacity) override;
+                  float opacity,
+                  const float* colorModulation = nullptr) override;
 
     // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
     void LayerSetBlend(int method, float opacity, const float* uniformColor) override;
@@ -2325,7 +2327,8 @@ void VulkanRenderBackend::DrawMesh(const float* vertices,
                                    const uint16_t* indices,
                                    int indexCount,
                                    void* handle,
-                                   float opacity)
+                                   float opacity,
+                                   const float* colorModulation)
 {
     if (skipDraw_ || !currentTarget_ || !vertices || !indices || vertexCount <= 0 || indexCount <= 0)
         return;
@@ -2390,6 +2393,9 @@ void VulkanRenderBackend::DrawMesh(const float* vertices,
 
     MeshPushConstants pc{};
     std::memcpy(pc.uniformColor, uniformColor_, sizeof(uniformColor_));
+    const float whiteModulation[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::memcpy(pc.colorModulation, colorModulation ? colorModulation : whiteModulation,
+                sizeof(pc.colorModulation));
     pc.viewportX = (float)currentTarget_->width;
     pc.viewportY = (float)currentTarget_->height;
     pc.enableMask = maskTarget_ ? 1.0f : 0.0f;

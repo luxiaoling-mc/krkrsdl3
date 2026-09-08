@@ -46,6 +46,8 @@ public:
     int64_t mask = 0;
     int64_t bm = 0;
     int64_t color = 0;
+    // PSB 未写 color 时保持 false。缺省 0 不是中性色；中性是 0xff808080。
+    bool hasColor = false;
     std::string src;
     bool haszcc = false;
     std::array<double, 2> zcc_c = {0}; // 缩放曲线

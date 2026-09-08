@@ -58,7 +58,8 @@ public:
                   const uint16_t* indices,
                   int indexCount,
                   void* texture,
-                  float opacity) override;
+                  float opacity,
+                  const float* colorModulation = nullptr) override;
 
     // ---- Layer 合成（图层合成路径，软件 RenderManager 语义）----
     void LayerSetBlend(int method, float opacity, const float* uniformColor) override;
@@ -109,7 +110,7 @@ private:
     unsigned int program_ = 0, vao_ = 0, vbo_ = 0, ibo_ = 0;
     size_t vboSize_ = 0, iboSize_ = 0;
     int locTexture_ = -1, locMask_ = -1, locEnableMask_ = -1, locEnableColor_ = -1;
-    int locOpa_ = -1, locUniformColor_ = -1, locViewportSize_ = -1;
+    int locOpa_ = -1, locUniformColor_ = -1, locColorModulation_ = -1, locViewportSize_ = -1;
 
     // Layer 合成资源
     unsigned int programLayer_ = 0;
