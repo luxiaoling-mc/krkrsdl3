@@ -8,8 +8,9 @@ layout(push_constant) uniform PushConstants {
     float enableMask;  // 8
     float enableColor; // 12
     float opa;         // 16
-    float pad;         // 20
-    vec4 uniformColor; // 24（std140 16 字节对齐）
+    float pad;              // 20；std140 将下一 vec4 对齐到 32
+    vec4 uniformColor;      // 32
+    vec4 colorModulation;   // 48：采样后乘性染色，identity=(1,1,1,1)
 } pc;
 void main()
 {
@@ -25,6 +26,7 @@ void main()
         if (pc.enableColor > 0.5) {
             color = vec4(pc.uniformColor.xyz, pc.uniformColor.a * color.a);
         }
+        color *= pc.colorModulation;
         color.a = color.a * pc.opa;
         FragColor = color;
     }

@@ -127,6 +127,7 @@ const char* kMeshFragmentShaderSrc = R"(
             uniform float opa;
             uniform bool enableColor;
             uniform vec4 uniformColor;
+            uniform vec4 colorModulation;
             void main()
             {
                 vec4 maskColor = vec4(1.0f);
@@ -143,6 +144,7 @@ const char* kMeshFragmentShaderSrc = R"(
                     {
                         color = vec4(uniformColor.xyz, uniformColor.a * color.a);
                     }
+                    color *= colorModulation;
                     color.a = color.a * opa;
                     FragColor = vec4(color.rgba);
                 }
@@ -170,6 +172,7 @@ const char* kMeshFragmentShaderSrc = R"(#version 100
             uniform float opa;
             uniform bool enableColor;
             uniform vec4 uniformColor;
+            uniform vec4 colorModulation;
             void main()
             {
                 vec4 maskColor = vec4(1.0);
@@ -186,6 +189,7 @@ const char* kMeshFragmentShaderSrc = R"(#version 100
                     {
                         color = vec4(uniformColor.xyz, uniformColor.a * color.a);
                     }
+                    color *= colorModulation;
                     color.a = color.a * opa;
                     gl_FragColor = color;
                 }
@@ -532,6 +536,7 @@ bool GLRenderBackend::EnsureMeshProgram()
     locEnableColor_ = glGetUniformLocation(prog, "enableColor");
     locOpa_ = glGetUniformLocation(prog, "opa");
     locUniformColor_ = glGetUniformLocation(prog, "uniformColor");
+    locColorModulation_ = glGetUniformLocation(prog, "colorModulation");
     locViewportSize_ = glGetUniformLocation(prog, "viewportSize");
 
     program_ = prog;
@@ -837,7 +842,8 @@ void GLRenderBackend::DrawMesh(const float* vertices,
                                const uint16_t* indices,
                                int indexCount,
                                void* handle,
-                               float opacity)
+                               float opacity,
+                               const float* colorModulation)
 {
     if (skipDraw_ || !currentTarget_ || !vertices || !indices || vertexCount <= 0 || indexCount <= 0)
         return;
@@ -893,6 +899,9 @@ void GLRenderBackend::DrawMesh(const float* vertices,
     glUniform1i(locEnableColor_, enableColor_ ? GL_TRUE : GL_FALSE);
     glUniform4f(locUniformColor_, uniformColor_[0], uniformColor_[1], uniformColor_[2],
                 uniformColor_[3]);
+    const float whiteModulation[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float* modulation = colorModulation ? colorModulation : whiteModulation;
+    glUniform4f(locColorModulation_, modulation[0], modulation[1], modulation[2], modulation[3]);
     glUniform2f(locViewportSize_, (float)currentTarget_->width, (float)currentTarget_->height);
     if (useMask)
     {

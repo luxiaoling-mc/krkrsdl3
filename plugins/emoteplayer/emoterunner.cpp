@@ -1,5 +1,7 @@
 #include "emoterunner.h"
 
+#include <cstdint>
+
 #include "Platform.h"
 
 #define GLM_ASSERT_VALID(matrix) \
@@ -787,6 +789,7 @@ void emotenoderef::draw(krkrsdl3::iTVPRenderBackend* renderer, void* target, emo
         totalOpa *= renderMethod.at(i).opa;
     int blendMode = currbm;
     float uniformColor[4] = {0, 0, 0, 0};
+    float colorModulation[4] = {1, 1, 1, 1};
     if (blendMode == 21 && frame)
     {
         uniformColor[0] = ((frame->color) & 0xFF) / 255.0f;
@@ -794,13 +797,24 @@ void emotenoderef::draw(krkrsdl3::iTVPRenderBackend* renderer, void* target, emo
         uniformColor[2] = ((frame->color >> 16) & 0xFF) / 255.0f;
         uniformColor[3] = ((frame->color >> 24) & 0xFF) / 255.0f;
     }
+    else if (frame && frame->hasColor && static_cast<uint32_t>(frame->color) != 0xff808080u)
+    {
+        // bm!=21 时 color 是乘性染色。0xff808080 是 PSB 中性灰，必须保持原图；
+        // 未写 color 时 hasColor=false，也不能用默认 0 去乘（会把虹膜乘成黑/灰）。
+        const uint32_t tint = static_cast<uint32_t>(frame->color);
+        colorModulation[0] = (tint & 0xFF) / 255.0f;
+        colorModulation[1] = ((tint >> 8) & 0xFF) / 255.0f;
+        colorModulation[2] = ((tint >> 16) & 0xFF) / 255.0f;
+        colorModulation[3] = ((tint >> 24) & 0xFF) / 255.0f;
+    }
     renderer->SetBlendMode(blendMode, blendMode == 21 ? uniformColor : nullptr);
     if (blendMode == 6)
         return; // 该模式不绘制（GL 后端原行为）
 
     // 绘制网格（MeshVertex 布局与接口的交错 xyuv 格式一致，直接传递）
     renderer->DrawMesh((const float*)_meshVertices.data(), (int)_meshVertices.size(),
-                       _meshIndices.data(), (int)_meshIndices.size(), ic->selftexture, totalOpa);
+                       _meshIndices.data(), (int)_meshIndices.size(), ic->selftexture, totalOpa,
+                       colorModulation);
 }
 float emotenoderef::getCurrentRenderZ()
 {
