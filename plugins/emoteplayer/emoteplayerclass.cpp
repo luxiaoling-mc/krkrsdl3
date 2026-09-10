@@ -909,7 +909,9 @@ void EmotePlayer::drawToTarget(krkrsdl3::iTVPRenderBackend* renderer,
                                tjs_int width,
                                tjs_int height,
                                tjs_int originX,
-                               tjs_int originY)
+                               tjs_int originY,
+                               tjs_int viewW,
+                               tjs_int viewH)
 {
     if (emtEngine._mainfile == nullptr || emtEngine._mainmotion == nullptr)
         return;
@@ -918,10 +920,13 @@ void EmotePlayer::drawToTarget(krkrsdl3::iTVPRenderBackend* renderer,
     // D3D 直通路径不经 draw()/ResetDrawArea()：_limitArea 必须在这里初始化，
     // 否则 progress() 因"区域为零"提前返回（动画不推进）、updateTransMat()
     // 投影矩阵退化（什么都不画）。只补区域/变换，不创建软渲染目标。
+    // 真实渲染视口尺寸 viewW/viewH 一并记录（shape 判定区域
+    // 收集的 NDC→像素换算基准，须与实际渲染视口一致）
     if (width > 0 && height > 0 &&
         (_limitArea.width == _limitArea.originX || _limitArea.height == _limitArea.originY ||
          _width != width || _height != height || _limitArea.originX != originX ||
-         _limitArea.originY != originY))
+         _limitArea.originY != originY || _limitArea.viewW != (float)viewW ||
+         _limitArea.viewH != (float)viewH))
     {
         _width = width;
         _height = height;
@@ -929,6 +934,8 @@ void EmotePlayer::drawToTarget(krkrsdl3::iTVPRenderBackend* renderer,
         _limitArea.originY = originY;
         _limitArea.width = width;
         _limitArea.height = height;
+        _limitArea.viewW = (float)viewW;
+        _limitArea.viewH = (float)viewH;
         if (emtEngine._mainfile != nullptr)
             _limitArea.zMax = emtEngine.getZMax() * 2;
         if (_limitArea.zMax < 30.0f)
@@ -1013,11 +1020,24 @@ void EmotePlayer::stopWind()
 }
 bool EmotePlayer::contains(tjs_real x, tjs_real y)
 {
+    // 先遍历全部 shape 判定层（无 label 过滤），再回退到
+    // icon 包围盒。此前只查 icon 包围盒，shape 判定层（触摸区）不参与判定
+    if (emtEngine.containsAnyShape((float)x, (float)y))
+        return true;
     if (emtEngine._mainMotionRef != nullptr)
-    {
         return emtEngine._mainMotionRef->contains(x, y);
-    }
     return false;
+}
+bool EmotePlayer::containsLabel(tTJSString label, tjs_real x, tjs_real y)
+{
+    // 在 progress 阶段收集的 shapeNodeAreas 中匹配 label 并做
+    // 点判定。坐标系约定：shapeNodeAreas 收集空间与调用方坐标统一在渲染视口
+    // 像素空间（虚拟屏坐标，Y 向下）——收集端 clip→像素用真实视口
+    //（limitArea.viewW/viewH）换算，镜像已包含在收集链的 attachMat 中，
+    // 因此此处对坐标纯透传
+    if (emtEngine._mainfile == nullptr || emtEngine._mainMotionRef == nullptr)
+        return false;
+    return emtEngine.containsLabel(label.AsStdString(), (float)x, (float)y);
 }
 void EmotePlayer::skip()
 {
@@ -1328,6 +1348,12 @@ void EmotePlayer::updateTransMat()
     _renderMethod.currAngle = currAngle;
     _renderMethod.currZx = currZx;
     _renderMethod.currZy = currZy;
+    // 记录根投影参照系（shape 判定区域 clip→像素换算所用，
+    // 须与 containsLabel 的判定使用同一 limitArea；未传真实视口时的回退基准）
+    _renderMethod.originX = _limitArea.originX;
+    _renderMethod.originY = _limitArea.originY;
+    _renderMethod.width = _limitArea.width;
+    _renderMethod.height = _limitArea.height;
 }
 void EmotePlayer::ResetDrawArea(tjs_int width, tjs_int height)
 {

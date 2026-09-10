@@ -200,6 +200,9 @@ public:
     void startWind(tjs_real start, tjs_real goal, tjs_real speed, tjs_real powMin, tjs_real powMax);
     void stopWind();
     bool contains(tjs_real x, tjs_real y);
+    // 带标签命中判定；x/y 为调用方传入的设备像素坐标，
+    // engine 侧在 shapeNodeAreas 收集空间直接判定
+    bool containsLabel(tTJSString label, tjs_real x, tjs_real y);
 
     void skip();
     void skipToSync();
@@ -220,7 +223,9 @@ public:
                       tjs_int width = 0,
                       tjs_int height = 0,
                       tjs_int originX = 0,
-                      tjs_int originY = 0);
+                      tjs_int originY = 0,
+                      tjs_int viewW = 0,
+                      tjs_int viewH = 0);
     void playTimeline(tTJSString name, tjs_int flags = 0);
     void stopTimeline(tTJSString name = "");
     bool getTimelinePlaying(tTJSString name = "");
@@ -309,6 +314,8 @@ public:
     using EmotePlayer::setCameraOffset;
     using EmotePlayer::setColor;
     using EmotePlayer::setCoord;
+    using EmotePlayer::contains;
+    using EmotePlayer::containsLabel;
     using EmotePlayer::setDrawAffineTranslateMatrix;
     using EmotePlayer::setOuterForce;
     using EmotePlayer::setRotate;
