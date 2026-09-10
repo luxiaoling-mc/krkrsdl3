@@ -1,6 +1,7 @@
 #include "emoterunner.h"
 
 #include <cstdint>
+#include <functional> // std::function (containsAnyShape)
 
 #include "Platform.h"
 
@@ -185,6 +186,69 @@ static void evaluateSurfaceChain(
     outClipY = -trans.y;
 }
 
+// Shape(触摸判定层)专用变换：输出 shape 局部点(lx,ly) 经全链
+// 平移/旋转/缩放后的 clip 坐标。与 evaluateSurfaceChain 的区别：
+//  1. 不做 icon 的 origin 偏移与纹理尺寸归一化（shape 不是纹理）
+//  2. 不走 Bezier/UV 链（shape 不参与网格变形）
+//  3. 节点位置 = 纯 T(coord)*R(angle)*S(zx,zy) 链（按 inheritMask）作用下的结果
+// 局部点以 shape 中心为原点：(±width/2, ±height/2)
+static void evaluateShapePoint(
+    const std::vector<emoteRender>& renderMethod,
+    float lx, float ly,
+    float& outClipX, float& outClipY)
+{
+    glm::vec4 trans(lx, ly, 0.0f, 1.0f);
+    int surfaceCount = (int)renderMethod.size();
+    uint32_t currInheritMask = 0xFFFFFFF;
+    for (int i = surfaceCount - 1; i >= 0; i--)
+    {
+        currInheritMask &= renderMethod[i].currInheritMask;
+        glm::mat4 model(1.0f);
+        // 最内层(shape 自身): zx/zy 是尺寸定义(zx*16 已计入 width/height)，
+        // 只应用位置平移，不再缩放/旋转
+        if (i == surfaceCount - 1)
+        {
+            model = glm::translate(
+                model, glm::vec3(renderMethod[i].currCoordx, renderMethod[i].currCoordy, 0));
+        }
+        else
+        {
+            model = glm::translate(
+                model, glm::vec3(renderMethod[i].currCoordx, renderMethod[i].currCoordy, 0));
+            if ((currInheritMask & 0x10) == 0x10)
+                model = glm::rotate(model, glm::radians(renderMethod[i].currAngle),
+                                    glm::vec3(0.0f, 0.0f, 1.0f));
+            if ((currInheritMask & 0x20) == 0x20)
+                model = glm::scale(model, glm::vec3(renderMethod[i].currZx, 1.0f, 1.0f));
+            if ((currInheritMask & 0x40) == 0x40)
+                model = glm::scale(model, glm::vec3(1.0f, renderMethod[i].currZy, 1.0f));
+            if ((currInheritMask & 0x180) == 0x180)
+            {
+                model = glm::mat4(1.0f, renderMethod[i].currSy, 0.0f, 0.0f,
+                                  renderMethod[i].currSx, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                                  0.0f, 0.0f, 0.0f, 0.0f, 1.0f) *
+                        model;
+            }
+            else if ((currInheritMask & 0x80) == 0x80)
+            {
+                model = glm::mat4(1.0f, 0.0f, 0.0f, 0.0f, renderMethod[i].currSx, 1.0f, 0.0f,
+                                  0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f) *
+                        model;
+            }
+            else if ((currInheritMask & 0x100) == 0x100)
+            {
+                model = glm::mat4(1.0f, renderMethod[i].currSy, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                  0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f) *
+                        model;
+            }
+        }
+        trans = model * trans;
+        trans = glm::vec4(renderMethod[i].attachMat * trans);
+    }
+    outClipX = trans.x;
+    outClipY = -trans.y;
+}
+
 // Build subdivided mesh for a given icon node
 static void buildSubdivMesh(
     const std::vector<emoteRender>& renderMethod,
@@ -285,8 +349,30 @@ void emotenoderef::checkDrawStatus(float tick, std::vector<emoteRender>& renderL
 
     if (frame == nullptr || !frame->hasContent)
     {
-        isNeedDraw = false;
-        return;
+        // motion 末尾的"结束帧"（type0 无 content）被命中时
+        //（tick 超过 motion 末帧且无循环回绕），回退到最后一个有 content 的帧：
+        // 静态层（如触摸判定 shape）在任何 tick 下都应保持其几何；
+        // 中间的空帧仍保持"隐藏"语义。此前直接隐藏，导致主 motion 播完后
+        // 触摸判定层整体消失
+        emoteframe* saved = frame;
+        if (currFrameIdx != (size_t)-1 && currFrameIdx == currentNode->frameList.size() - 1)
+        {
+            for (int i = (int)currFrameIdx - 1; i >= 0; --i)
+            {
+                if (currentNode->frameList.at(i)->hasContent)
+                {
+                    frame = currentNode->frameList.at(i);
+                    break;
+                }
+            }
+        }
+        if (frame == nullptr || !frame->hasContent)
+        {
+            frame = saved;
+            isNeedDraw = false;
+            return;
+        }
+        nextframe = nullptr; // 静态保持，不再向后续帧插值
     }
     nextframe = nullptr;
     if (currFrameIdx >= 0 && currFrameIdx < currentNode->frameList.size() - 1)
@@ -298,6 +384,7 @@ void emotenoderef::checkDrawStatus(float tick, std::vector<emoteRender>& renderL
     isNeedDraw = true;
     isIcon = false;
     isLayout = false;
+    isShape = false;
     emoteicon* tmpic = currentNode-> _filePtr->findsourceByName(frame->src);
     if (tmpic == nullptr)
         currentMtn = refTop->findmotionByName(frame->src);
@@ -322,15 +409,32 @@ void emotenoderef::checkDrawStatus(float tick, std::vector<emoteRender>& renderL
     else if (currentMtn != nullptr || strcmp(frame->src.c_str(), "layout") == 0 ||
              strcmp(frame->src.c_str(), "clip") == 0)
     {
-        isLayout = true;
-
-        // 直接用父类提供的区域
-        if (width != lim.width || height != lim.height)
+        // 部分导出的 PSB 会剥离 shape 帧的 src 字段
+        //（content 仅剩 coord/mask/zx/zy），解析后 src 落到默认值 "layout"，
+        // 此前一律当 layout 处理，shape 节点（node type==1）的判定区域
+        // 收集不到。type==1 即 shape 层，按 shape 处理并记录判定区域
+        if (strcmp(frame->src.c_str(), "layout") == 0 && currentNode->type == 1)
         {
-            width = lim.width;
-            height = lim.height;
-            originX = lim.originX;
-            originY = lim.originY;
+            isShape = true;
+            isNeedDraw = false;
+            // shape 像素尺寸 = zx/zy * 16 (PSB 规范: 单元正方形为 16x16)
+            width = (tjs_real)frame->zx * 16.0;
+            height = (tjs_real)frame->zy * 16.0;
+            originX = width / 2;
+            originY = height / 2;
+        }
+        else
+        {
+            isLayout = true;
+
+            // 直接用父类提供的区域
+            if (width != lim.width || height != lim.height)
+            {
+                width = lim.width;
+                height = lim.height;
+                originX = lim.originX;
+                originY = lim.originY;
+            }
         }
     }
     else
@@ -338,6 +442,13 @@ void emotenoderef::checkDrawStatus(float tick, std::vector<emoteRender>& renderL
         std::istringstream iss(frame->src);
         std::string token;
         std::getline(iss, token, '/');
+        if (token == "src")
+        {
+            // emote 拼接前缀 "src/<type>/<name>"，跳过第一段。
+            // 此前直接拿 "src" 判类型，落入 unsupported 分支被丢弃，
+            // shape 判定层因此收集不到区域
+            std::getline(iss, token, '/');
+        }
         if (strcmp(token.c_str(), "blank") == 0)
         {
             std::getline(iss, token, ':');
@@ -363,6 +474,7 @@ void emotenoderef::checkDrawStatus(float tick, std::vector<emoteRender>& renderL
             // shape的像素尺寸 = zx/zy * 16 (PSB规范: 单元正方形为16x16)
             // shape子类型从src的第二部分获取: rect(默认)、circle、point、quad
             const tjs_real shapeUnit = 16.0;
+            isShape = true; // 标记 shape 判定层
             isNeedDraw = false;
             width = (tjs_real)frame->zx * shapeUnit;
             height = (tjs_real)frame->zy * shapeUnit;
@@ -587,7 +699,10 @@ void emotenoderef::progress(float tick, std::vector<emoteRender>& renderList, em
         }
 
         // shape节点: 将currZx/currZy重置为1，避免与width/height双重缩放(px = zx * shapeUnit * 1)
-        if (!isIcon && frame != nullptr && frame->src.rfind("shape/", 0) == 0)
+        // 判定条件由"src 以 shape/ 开头"改为统一的 isShape 标记
+        //（src 缺省的 shape 节点会被原条件漏掉，导致缩放双重叠加、
+        // 判定区域计算错误）
+        if (isShape)
         {
             currZx = 1.0f;
             currZy = 1.0f;
@@ -650,38 +765,83 @@ void emotenoderef::progress(float tick, std::vector<emoteRender>& renderList, em
 
     // 对于shape节点保存面积信息(用于contains检测和getLayerGetter的shape返回)
     // 注: shape节点可能没有hasContent，用src判断即可
-    if (!isIcon && frame != nullptr && refMtn != nullptr)
+    // 识别条件由"src 以 shape/ 开头"改为统一的 isShape 标记，
+    // 兼容 src 缺省（解析为 layout）的 shape 节点
+    if (isShape && frame != nullptr && refMtn != nullptr && renderMethod.size() > 0)
     {
-        std::string src(frame->src);
-        if (src.rfind("shape/", 0) == 0 && renderMethod.size() > 0)
         {
-            // 两个端点就够了
-            float ot1x, ot1y, ot2x, ot2y;
-            evaluateSurfaceChain(renderMethod, 0, 0, ot1x, ot1y);
-            evaluateSurfaceChain(renderMethod, 1, 1, ot2x, ot2y);
-            glm::vec2 pt1(0, 0), pt2(1, 1);
-            // 边界缩放（最外层 surface 输出 clip → screen）
-            pt1.x = (ot1x / 2.0 + 0.5) * currentNode->_filePtr->_screenSize.width;
-            pt1.y = (ot1y / 2.0 + 0.5) * currentNode->_filePtr->_screenSize.height;
-            pt2.x = (ot2x / 2.0 + 0.5) * currentNode->_filePtr->_screenSize.width;
-            pt2.y = (ot2y / 2.0 + 0.5) * currentNode->_filePtr->_screenSize.height;
-            // 保存区域(使用独立的shapeList，避免状态重复)
+            // shape 区域：局部四角 (±w/2, ±h/2) 经全链变换后取
+            // 包围盒。shape 的 origin 是中心(checkDrawStatus 中 originX=width/2)，
+            // 尺寸 = zx*16 × zy*16。此前用 evaluateSurfaceChain 的 (0,0)-(1,1)
+            // 两个 UV 端点 —— 该函数面向 icon 纹理（含 origin 偏移/Bezier/UV 链），
+            // 对非纹理的 shape 语义完全错误，算出的区域与实际位置不符
+            const float halfW = (float)(width * 0.5);
+            const float halfH = (float)(height * 0.5);
+            float cs[4][2] = {{-halfW, -halfH}, {halfW, -halfH}, {halfW, halfH}, {-halfW, halfH}};
+            float minX = 0, minY = 0, maxX = 0, maxY = 0;
+            // 提前声明：四角顶点在下方循环内直接写入 quad
             emoterect tmprect;
+            for (int ci = 0; ci < 4; ci++)
+            {
+                float ccx, ccy;
+                evaluateShapePoint(renderMethod, cs[ci][0], cs[ci][1], ccx, ccy);
+                // clip → 渲染视口像素（GL 视口变换）：tex = ((clipX+1)/2*W,
+                // (1-clipY_gl)/2*H)。evaluateShapePoint 输出的 ccy 已含
+                // shader 的 Y 取反（ccy = -clipY_gl），故 texY=(1+ccy)/2*H。
+                // 参照尺寸取根 renderMethod 携带的 limitArea（与根投影 ortho
+                // 一致），不能用本节点的 lim（那是父链局部区域）。
+                // 换算基准由 PSB 逻辑尺寸 _screenSize 改为真实
+                // 渲染视口（lim.viewW/viewH；未设置时回退根节点 width/height）。
+                // 两者不一致时（如拉伸/缩放渲染）判定区域与画面错位。
+                // 收集空间 = contains 输入空间 = 调用方传入的设备像素空间
+                const emoteRender& rootRm = renderMethod.front();
+                float vw = lim.viewW > 0.0f ? lim.viewW : rootRm.width;
+                float vh = lim.viewH > 0.0f ? lim.viewH : rootRm.height;
+                float px = (ccx / 2.0f + 0.5f) * vw;
+                float py = (1.0f + ccy) * 0.5f * vh;
+                // 保存变换后的实际四角（与 push 顺序一致），
+                // 供精确四边形判定使用（包围盒仅作 circle/point 参照）
+                tmprect.quad[ci][0] = px;
+                tmprect.quad[ci][1] = py;
+                if (ci == 0)
+                {
+                    minX = maxX = px;
+                    minY = maxY = py;
+                }
+                else
+                {
+                    minX = std::min(minX, px);
+                    maxX = std::max(maxX, px);
+                    minY = std::min(minY, py);
+                    maxY = std::max(maxY, py);
+                }
+            }
+            // 保存区域(使用独立的shapeList，避免状态重复)
+            // tmprect 已在四角循环前声明（quad 顶点在循环内写入）
             tmprect.label = currentNode->label;
-            tmprect.left = pt1.x;
-            tmprect.top = pt1.y;
-            tmprect.width = pt2.x - pt1.x;
-            tmprect.height = pt2.y - pt1.y;
+            tmprect.left = minX;
+            tmprect.top = minY;
+            tmprect.width = maxX - minX;
+            tmprect.height = maxY - minY;
             // 根据src后缀确定shape子类型: rect/circle/point/quad
-            std::string srcType = src.substr(6); // 去掉"shape/"
-            if (srcType == "circle")
-                tmprect.shapeType = 1;
-            else if (srcType == "point")
-                tmprect.shapeType = 0;
-            else if (srcType == "quad")
-                tmprect.shapeType = 3;
-            else
-                tmprect.shapeType = 2; // rect默认
+            //（src 缺失子类型信息时默认按 rect 处理）
+            std::string src(frame->src);
+            size_t shapePos = src.find("shape/");
+            if (shapePos != std::string::npos)
+            {
+                std::string srcType = src.substr(shapePos + 6);
+                while (!srcType.empty() &&
+                       (srcType.back() == '/' || srcType.back() == '\0'))
+                    srcType.pop_back();
+                if (srcType == "circle")
+                    tmprect.shapeType = 1;
+                else if (srcType == "point")
+                    tmprect.shapeType = 0;
+                else if (srcType == "quad")
+                    tmprect.shapeType = 3;
+                else
+                    tmprect.shapeType = 2; // rect默认
+            }
             refMtn->shapeNodeAreas.push_back(tmprect);
         }
     }
@@ -730,7 +890,14 @@ void emotenoderef::progress(float tick, std::vector<emoteRender>& renderList, em
             emotenoderef* childRef = refMtn->getNodeRef(ch);
             if (childRef)
             {
-                childRef->progress(tick, renderMethod, {originX, originY, width, height, lim.zMax});
+                // 子链 limit 必须透传渲染视口 viewW/viewH：
+                // shape 判定区域收集的 NDC→像素换算依赖 lim.viewW/viewH，
+                // 5 字段初始化列表会将其丢为 0，收集端回退到根节点 width/height
+                //（= limitW/limitH，层矩阵含缩放时 ≠ 真实视口），导致判定
+                // 区域整体缩小/错位
+                childRef->progress(tick, renderMethod,
+                                   {originX, originY, width, height, lim.zMax, lim.viewW,
+                                    lim.viewH});
                 shapeList.insert(shapeList.end(), childRef->getShapeList().begin(), childRef->getShapeList().end());
             }
         }
@@ -741,8 +908,9 @@ void emotenoderef::progress(float tick, std::vector<emoteRender>& renderList, em
             // 在引擎中创建持久化的子motion ref
             currentMtnRef = new emotemotionref(currentMtn, refTop, this);
             refMtn->_subMotionRefs.push_back(currentMtnRef);
+            // 同上：子 motion 链同样透传 viewW/viewH
             currentMtnRef->progress(tick + currTimeOffset, renderMethod,
-                            {originX, originY, width, height, lim.zMax});
+                            {originX, originY, width, height, lim.zMax, lim.viewW, lim.viewH});
             // 收集子motion的shape
             shapeList.insert(shapeList.end(), currentMtnRef->getShapeList().begin(),
                              currentMtnRef->getShapeList().end());
@@ -1465,5 +1633,102 @@ tjs_real emoteengine::getVariable(const std::string& name)
 }
 void emoteengine::updatePhysics(float tick)
 {
+}
+
+// ---- 触摸命中判定 ----
+// 点在四边形内判定（射线法 even-odd，支持凸/凹四边形）。顶点为收集时
+// 保存的变换后实际四角（quad），比包围盒精确 —— 包围盒会把旋转/斜切
+// 四边形外扩，判定层相邻时容易误命中
+static bool pointInQuad(const float quad[4][2], float x, float y)
+{
+    bool inside = false;
+    for (int i = 0, j = 3; i < 4; j = i++)
+    {
+        float xi = quad[i][0], yi = quad[i][1];
+        float xj = quad[j][0], yj = quad[j][1];
+        if (((yi > y) != (yj > y)) &&
+            (x < (xj - xi) * (y - yi) / (yj - yi) + xi))
+            inside = !inside;
+    }
+    return inside;
+}
+
+// 点在 shape 区域内判定（shapeType：1=circle 2=rect 3=quad 0=point）
+// rect/quad 统一用变换后四角做精确四边形判定；src 缺省时
+// shapeType 落到默认 rect，同样适用 —— 判定区域精确贴合
+// 变换后的真实形状，不再使用外扩包围盒
+static bool pointInEmoteShape(const emoterect& r, float x, float y)
+{
+    switch (r.shapeType)
+    {
+    case 1: // circle: 包围盒左上+宽高 → 圆心/半径
+    {
+        float cx = r.left + r.width * 0.5f;
+        float cy = r.top + r.height * 0.5f;
+        float rad = r.width * 0.5f;
+        float dx = x - cx, dy = y - cy;
+        return dx * dx + dy * dy <= rad * rad;
+    }
+    case 0: // point: 极小范围
+    {
+        float cx = r.left, cy = r.top;
+        float dx = x - cx, dy = y - cy;
+        return dx * dx + dy * dy <= 1.0f;
+    }
+    case 3: // quad
+    case 2: // rect（src 缺省时的默认值）
+    default:
+        // 精确四边形判定（变换后实际四角），替代外扩包围盒
+        return pointInQuad(r.quad, x, y);
+    }
+}
+
+static bool containsLabelRef(emotemotionref* ref, const std::string& label, float x, float y)
+{
+    if (ref == nullptr)
+        return false;
+    for (const auto& area : ref->shapeNodeAreas)
+    {
+        // PSB parseString 会把结尾 '\0' 一并存入 label（长度+1），
+        // 项目内其它 label 比较均用 strcmp（在 '\0' 处截断），此处保持一致；
+        // 若用 std::string 的 == 会因长度差永远不相等，导致命中判定全部落空
+        if (std::strcmp(area.label.c_str(), label.c_str()) == 0 &&
+            pointInEmoteShape(area, x, y))
+            return true;
+    }
+    for (auto* sub : ref->_subMotionRefs)
+    {
+        if (containsLabelRef(sub, label, x, y))
+            return true;
+    }
+    return false;
+}
+
+bool emoteengine::containsLabel(const std::string& label, float x, float y)
+{
+    return containsLabelRef(_mainMotionRef, label, x, y);
+}
+
+bool emoteengine::containsAnyShape(float x, float y)
+{
+    // 无 label 过滤：遍历全部 shape 判定层
+    std::function<bool(emotemotionref*)> walk =
+        [&](emotemotionref* ref) -> bool
+    {
+        if (ref == nullptr)
+            return false;
+        for (const auto& area : ref->shapeNodeAreas)
+        {
+            if (pointInEmoteShape(area, x, y))
+                return true;
+        }
+        for (auto* sub : ref->_subMotionRefs)
+        {
+            if (walk(sub))
+                return true;
+        }
+        return false;
+    };
+    return walk(_mainMotionRef);
 }
 }

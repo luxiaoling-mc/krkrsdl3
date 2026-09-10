@@ -24,6 +24,7 @@ NCB_REGISTER_CLASS(DrawDeviceD3D)
     NCB_PROPERTY(transState, getTransState, setTransState);
     NCB_PROPERTY(maskMode, getMaskMode, setMaskMode);
     NCB_PROPERTY_RO(primaryLayers, getPrimaryLayers);
+    NCB_PROPERTY_RO(children, getChildren); // 脚本侧层命中判定依赖该属性枚举 D3D 层
     NCB_METHOD(checkEnable);
     NCB_METHOD(getModule);
     NCB_METHOD(update);
@@ -56,6 +57,7 @@ NCB_REGISTER_CLASS(D3D)
     NCB_PROPERTY(transState, getTransState, setTransState);
     NCB_PROPERTY(maskMode, getMaskMode, setMaskMode);
     NCB_PROPERTY_RO(primaryLayers, getPrimaryLayers);
+    NCB_PROPERTY_RO(children, getChildren); // 脚本侧层命中判定依赖该属性枚举 D3D 层
     NCB_METHOD(checkEnable);
     NCB_METHOD(getModule);
     NCB_METHOD(update);
@@ -155,6 +157,9 @@ NCB_REGISTER_CLASS(D3DEmotePlayer)
     NCB_METHOD(setColor);
     NCB_METHOD(setVariable);
     NCB_METHOD(getVariable);
+    // contains(label, x, y)：触摸命中判定，脚本侧对层做触摸检测时调用；
+    // RawCallback 以兼容 contains(x, y) 两参形式
+    NCB_METHOD_RAW_CALLBACK(contains, &D3DEmotePlayer::cb_contains, 0);
     NCB_METHOD(startWind);
     NCB_METHOD(stopWind);
     NCB_METHOD(playTimeline);

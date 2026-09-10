@@ -226,6 +226,71 @@ tjs_real D3DEmotePlayer::getVariable(tTJSString name)
     return 0;
 }
 
+bool D3DEmotePlayer::containsLabel(tTJSString label, tjs_real x, tjs_real y)
+{
+    if (Impl && Impl->Player)
+    {
+        // 调用方（脚本侧层）传入的 (x,y) 是经 revmtx 逆变换后的"层本地坐标"：
+        //   x2 = revmtx.a*x + revmtx.c*y + revmtx.tx
+        //   y2 = revmtx.b*x + revmtx.d*y + revmtx.ty
+        // 而引擎 shape 判定区域的收集空间是虚拟屏设备像素（左上原点、y 向下），
+        // 两者相差层的仿射变换，直接透传会导致判定区域与画面错位（层无变换时偏移半屏）。
+        // 这里用 Layer->Matrix（脚本 setMatrix 存入的同一矩阵，即 revmtx 的正变换）
+        // 把层本地坐标还原为 primary 中心坐标，再加半屏转成设备像素。
+        // Matrix 与 revmtx 严格互逆，缩放/旋转/剪切层均正确；层无变换时退化为 x + W/2。
+        float lx = (float)x, ly = (float)y;
+        float wx = lx, wy = ly;
+        if (Layer && Device)
+        {
+            wx = Layer->Matrix[0] * lx + Layer->Matrix[1] * ly + Layer->Matrix[12] +
+                 Device->GetWidth() * 0.5f;
+            wy = Layer->Matrix[4] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
+                 Device->GetHeight() * 0.5f;
+        }
+        return Impl->Player->containsLabel(label, wx, wy);
+    }
+    return false;
+}
+
+bool D3DEmotePlayer::contains(tjs_real x, tjs_real y)
+{
+    if (Impl && Impl->Player)
+    {
+        // 与 containsLabel 相同的坐标空间换算（层本地 → 设备像素）
+        float lx = (float)x, ly = (float)y;
+        float wx = lx, wy = ly;
+        if (Layer && Device)
+        {
+            wx = Layer->Matrix[0] * lx + Layer->Matrix[1] * ly + Layer->Matrix[12] +
+                 Device->GetWidth() * 0.5f;
+            wy = Layer->Matrix[4] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
+                 Device->GetHeight() * 0.5f;
+        }
+        return Impl->Player->contains(wx, wy);
+    }
+    return false;
+}
+
+tjs_error D3DEmotePlayer::cb_contains(
+    tTJSVariant* result, tjs_int numparams, tTJSVariant** param, D3DEmotePlayer* objthis)
+{
+    // contains(label, x, y)（带标签命中判定）/ contains(x, y) 两参分发
+    if (objthis == nullptr)
+        return TJS_E_FAIL;
+    if (numparams >= 3 && param[0]->Type() != tvtReal)
+    {
+        if (result)
+            *result = objthis->containsLabel(tTJSString(*param[0]), (tjs_real)*param[1],
+                                             (tjs_real)*param[2]);
+        return TJS_S_OK;
+    }
+    if (numparams < 2)
+        return TJS_E_BADPARAMCOUNT;
+    if (result)
+        *result = objthis->contains((tjs_real)*param[0], (tjs_real)*param[1]);
+    return TJS_S_OK;
+}
+
 void D3DEmotePlayer::startWind(tjs_real start, tjs_real goal, tjs_real speed, tjs_real powMin,
                                tjs_real powMax)
 {
@@ -441,7 +506,11 @@ void D3DEmotePlayer::DrawToTarget(void* target, void* maskTarget)
     tjs_int limitH = (tjs_int)((float)Device->GetHeight() / sy);
     tjs_int originX = Layer ? (tjs_int)(((float)Device->GetWidth() * 0.5f + Layer->Matrix[12]) / sx) : 0;
     tjs_int originY = Layer ? (tjs_int)(((float)Device->GetHeight() * 0.5f + Layer->Matrix[13]) / sy) : 0;
-    Impl->Player->drawToTarget(backend, target, maskTarget, true, limitW, limitH, originX, originY);
+    // 把真实渲染视口尺寸（设备宽高）传给 drawToTarget：
+    // shape 判定区域收集的 NDC→像素换算须与实际渲染视口一致，
+    // 否则判定区域与画面错位
+    Impl->Player->drawToTarget(backend, target, maskTarget, true, limitW, limitH, originX, originY,
+                               Device->GetWidth(), Device->GetHeight());
     Animating = Impl->Player->get_animating();
 }
 

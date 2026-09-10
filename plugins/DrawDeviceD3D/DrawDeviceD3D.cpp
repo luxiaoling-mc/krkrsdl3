@@ -851,6 +851,25 @@ tTJSVariant DrawDeviceD3D::getPrimaryLayers()
     return tTJSVariant(arr, arr);
 }
 
+tTJSVariant DrawDeviceD3D::getChildren()
+{
+    // children 属性：返回设备上全部 D3DLayer 的脚本对象数组。
+    // 脚本侧用它（drawDevice.children*）+ 元素的 absolute 属性做命中判定排序，
+    // 元素是带 checkTouch 的脚本层。此前无此属性，脚本侧取不到 D3D 层，
+    // D3D 层上的触摸判定整体失效
+    iTJSDispatch2* arr = TJSCreateArrayObject();
+    tjs_int idx = 0;
+    for (auto* layer : D3DLayers)
+    {
+        if (layer && layer->ScriptObject)
+        {
+            tTJSVariant v(layer->ScriptObject, layer->ScriptObject);
+            arr->PropSetByNum(TJS_MEMBERENSURE, idx++, &v, arr);
+        }
+    }
+    return tTJSVariant(arr, arr);
+}
+
 // ===========================================================================
 // D3DLayer
 // ===========================================================================

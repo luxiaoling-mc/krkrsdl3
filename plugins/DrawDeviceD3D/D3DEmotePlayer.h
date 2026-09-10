@@ -57,6 +57,14 @@ public:
     void startWind(tjs_real start, tjs_real goal, tjs_real speed, tjs_real powMin, tjs_real powMax);
     void stopWind();
 
+    // 触摸命中判定接口：脚本侧对层做触摸检测时调用 contains(label, x, y)。
+    // 此前无 contains 方法，脚本侧调用直接抛"成员不存在"，触摸判定完全失效。
+    // contains(label,x,y) 按指定 shape 判定层判定；contains(x,y) 遍历全部判定层
+    bool containsLabel(tTJSString label, tjs_real x, tjs_real y);
+    bool contains(tjs_real x, tjs_real y);
+    static tjs_error cb_contains(
+        tTJSVariant* result, tjs_int numparams, tTJSVariant** param, D3DEmotePlayer* objthis);
+
     void playTimeline(tTJSString name, tjs_int flags = 0);
     void stopTimeline(tTJSString name = "");
     void fadeOutTimeline(tTJSString name, tjs_real time = 0, tjs_real easing = 0);

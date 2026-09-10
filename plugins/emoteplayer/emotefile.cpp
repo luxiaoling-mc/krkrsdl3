@@ -473,8 +473,19 @@ emoteframe::emoteframe(emotefile* filePtr, uint32_t startOffset) : _filePtr(file
                     src = "";
                 }
                 src += tmp;
-                filePtr->parseString(tmp, _rootData["icon"]);
-                src += "/" + tmp;
+                // icon 部分缺失时不拼接：shape 帧
+                //（content.src="shape/xxx"）没有 icon 成员，无条件拼接会产出
+                // "src/shape/xxx/" 悬空 '/' 的 src，破坏 shape 帧的类型识别
+                // 与判定区域收集
+                auto iconIt = _rootData.find("icon");
+                if (iconIt != _rootData.end())
+                {
+                    tmp.clear();
+                    if (filePtr->parseString(tmp, iconIt->second) && !tmp.empty())
+                    {
+                        src += "/" + tmp;
+                    }
+                }
                 src.erase(std::remove(src.begin(), src.end(), '\0'), src.end());
             }
         }

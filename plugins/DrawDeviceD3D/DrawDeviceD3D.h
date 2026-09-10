@@ -180,6 +180,10 @@ public:
     // ---- 内部 ----
     void RegisterD3DLayer(class D3DLayer* layer) { D3DLayers.push_back(layer); }
     void UnregisterD3DLayer(class D3DLayer* layer);
+    // children 属性：返回设备上全部 D3DLayer 的脚本对象数组。
+    // 脚本侧按 drawDevice.children* + 元素 absolute 属性做触摸命中判定排序；
+    // 缺失该属性时 D3D 层完全不参与触摸判定
+    tTJSVariant getChildren();
     krkrsdl3::iTVPRenderBackend* GetBackend() { return Backend; }
     tjs_int GetWidth() const { return Width; }
     tjs_int GetHeight() const { return Height; }

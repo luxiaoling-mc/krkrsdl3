@@ -19,6 +19,11 @@ namespace emoteplayer
         float width = 0.0f;
         float height = 0.0f;
         float zMax = 0.0f;
+        // 实际渲染视口尺寸（可能与 width/height 不同）。
+        // shape 判定区域收集时的 NDC→像素换算必须使用实际视口尺寸，
+        // 否则判定区域与画面错位。0 表示回退到 width/height。
+        float viewW = 0.0f;
+        float viewH = 0.0f;
     };
     // shape类型(pointed从PSB node的"shape"字段, 或从frame->src推断)
     // 0=point 1=circle 2=rect(默认) 3=quad
@@ -30,6 +35,12 @@ namespace emoteplayer
         float width = 0;
         float height = 0;
         int shapeType = 2; // 默认rect
+        // shape 判定区域的变换后四角顶点（设备像素，顺时针）。
+        // 矩形 shape 经节点全链变换（旋转/缩放/剪切）后是任意四边形，
+        // 用包围盒判定会把区域外扩而误命中相邻区域，故保存实际四角
+        // 供 pointInEmoteShape 做精确四边形判定；circle/point 仍用
+        // left/top/width/height。
+        float quad[4][2] = {{0}};
     };
     struct emoteRender // 渲染方式
     {
@@ -93,6 +104,10 @@ namespace emoteplayer
         bool isNeedDraw = false;
         bool isIcon = false;
         bool isLayout = false;
+        // shape 判定层（触摸判定用）：src 以 "shape/" 开头，
+        // 或 src 缺省（部分导出的 PSB 剥离了 shape 帧的 src 字段，
+        // 解析后落到 layout）且 node type==1
+        bool isShape = false;
         emoteframe* frame = nullptr;
         emoteframe* nextframe = nullptr;
 
@@ -189,6 +204,12 @@ namespace emoteplayer
         void setVariable(const std::string& name, tjs_real value);
         tjs_real getVariable(const std::string& name);
         void updatePhysics(float tick);
+
+        // 触摸命中判定：x/y 为 shapeNodeAreas 的收集空间
+        //（渲染视口像素，左上原点、Y 向下）
+        bool containsLabel(const std::string& label, float x, float y);
+        // 无 label 过滤版：遍历全部 shape 判定层
+        bool containsAnyShape(float x, float y);
 
         // progress阶段创建的主motion ref(生命周期跨progress/draw)
         emotemotionref* _mainMotionRef = nullptr;
