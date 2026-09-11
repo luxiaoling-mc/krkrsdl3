@@ -385,6 +385,18 @@ public:
         {
             if (numparams < 2)
                 return TJS_E_BADPARAMCOUNT;
+            // contains(label, x, y)：带标签命中判定（脚本 AffineSourceMotion::checkTouch
+            // 等 3 参数形式）。此前只按 2 参数处理，param[0]（标签字符串）被转成
+            // 数值 0 当作 x、真实 x 被当作 y、真实 y 被丢弃，导致带旋转层的
+            // 触摸判定永远失败（轴对齐层凑巧不受影响）
+            if (numparams >= 3 && param[0]->Type() != tvtReal)
+            {
+                if (result && _ptr)
+                    *result =
+                        _ptr->containsLabel(tTJSString(*param[0]), (tjs_real)*param[1],
+                                            (tjs_real)*param[2]);
+                return TJS_S_OK;
+            }
             tjs_real x = *param[0];
             tjs_real y = *param[1];
             if (result)
@@ -1030,14 +1042,51 @@ bool EmotePlayer::contains(tjs_real x, tjs_real y)
 }
 bool EmotePlayer::containsLabel(tTJSString label, tjs_real x, tjs_real y)
 {
-    // 在 progress 阶段收集的 shapeNodeAreas 中匹配 label 并做
-    // 点判定。坐标系约定：shapeNodeAreas 收集空间与调用方坐标统一在渲染视口
-    // 像素空间（虚拟屏坐标，Y 向下）——收集端 clip→像素用真实视口
-    //（limitArea.viewW/viewH）换算，镜像已包含在收集链的 attachMat 中，
-    // 因此此处对坐标纯透传
+    // 在 progress 阶段收集的 shapeNodeAreas 中匹配 label 并做点判定。
+    // 坐标系适配：非直通（软渲染）路径下，脚本坐标是经 revmtx 逆变换后的
+    // 模型本地空间（setDrawAffineTranslateMatrix 的输入空间），而判定区域
+    // 收集于仿射后的绘制空间（attachMat = 投影 * _affineTrans），因此
+    // 需先用 _affineTrans 正变换到绘制空间再比对。_affineTrans 为单位阵
+    //（直通/D3D 路径或未设置仿射）时无影响。
     if (emtEngine._mainfile == nullptr || emtEngine._mainMotionRef == nullptr)
         return false;
-    return emtEngine.containsLabel(label.AsStdString(), (float)x, (float)y);
+    float wx = (float)x, wy = (float)y;
+    {
+        // 单位阵检查（避免 glm 版本间 operator== 差异）
+        const glm::mat4& m = _affineTrans;
+        bool identity = m[0][0] == 1.0f && m[1][1] == 1.0f && m[2][2] == 1.0f &&
+                        m[3][3] == 1.0f && m[0][1] == 0.0f && m[1][0] == 0.0f &&
+                        m[3][0] == 0.0f && m[3][1] == 0.0f;
+        if (!identity)
+        {
+            float lx = wx, ly = wy;
+            wx = m[0][0] * lx + m[1][0] * ly + m[3][0];
+            wy = m[0][1] * lx + m[1][1] * ly + m[3][1];
+        }
+    }
+    return emtEngine.containsLabel(label.AsStdString(), wx, wy);
+}
+tjs_error EmotePlayer::cb_contains(
+    tTJSVariant* result, tjs_int numparams, tTJSVariant** param, EmotePlayer* objthis)
+{
+    // contains(label, x, y)（带标签命中判定，脚本 AffineSourceMotion::checkTouch
+    // 的 3 参数形式）/ contains(x, y)（遍历全部判定层）两参分发。
+    // 此前只注册了 2 参数绑定，3 参数调用的标签字符串被强制转成 0、
+    // 真实 x 被当作 y、真实 y 被丢弃，触摸判定永远失败
+    if (objthis == nullptr)
+        return TJS_E_FAIL;
+    if (numparams >= 3 && param[0]->Type() != tvtReal)
+    {
+        if (result)
+            *result = objthis->containsLabel(tTJSString(*param[0]), (tjs_real)*param[1],
+                                             (tjs_real)*param[2]);
+        return TJS_S_OK;
+    }
+    if (numparams < 2)
+        return TJS_E_BADPARAMCOUNT;
+    if (result)
+        *result = objthis->contains((tjs_real)*param[0], (tjs_real)*param[1]);
+    return TJS_S_OK;
 }
 void EmotePlayer::skip()
 {

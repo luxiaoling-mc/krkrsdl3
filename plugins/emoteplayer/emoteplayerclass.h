@@ -203,6 +203,10 @@ public:
     // 带标签命中判定；x/y 为调用方传入的设备像素坐标，
     // engine 侧在 shapeNodeAreas 收集空间直接判定
     bool containsLabel(tTJSString label, tjs_real x, tjs_real y);
+    // contains 的脚本绑定分发：contains(label, x, y)（带标签命中，3 参数）/
+    // contains(x, y)（遍历全部判定层，2 参数）
+    static tjs_error cb_contains(tTJSVariant* result, tjs_int numparams, tTJSVariant** param,
+                                 EmotePlayer* objthis);
 
     void skip();
     void skipToSync();
@@ -316,6 +320,11 @@ public:
     using EmotePlayer::setCoord;
     using EmotePlayer::contains;
     using EmotePlayer::containsLabel;
+    static tjs_error cb_contains(tTJSVariant* result, tjs_int numparams, tTJSVariant** param,
+                                 Player* objthis)
+    {
+        return EmotePlayer::cb_contains(result, numparams, param, objthis);
+    }
     using EmotePlayer::setDrawAffineTranslateMatrix;
     using EmotePlayer::setOuterForce;
     using EmotePlayer::setRotate;

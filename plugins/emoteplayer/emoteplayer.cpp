@@ -64,7 +64,8 @@ NCB_REGISTER_SUBCLASS(EmotePlayer)
     NCB_METHOD(setCameraOffset);
     NCB_METHOD(startWind);
     NCB_METHOD(stopWind);
-    NCB_METHOD(contains);
+    // contains(label, x, y) / contains(x, y) 两参分发（见 EmotePlayer::cb_contains）
+    NCB_METHOD_RAW_CALLBACK(contains, &EmotePlayer::cb_contains, 0);
     NCB_METHOD(skip);
     NCB_METHOD(skipToSync);
     NCB_METHOD(pass);
@@ -117,7 +118,8 @@ NCB_REGISTER_SUBCLASS(Player)
     NCB_METHOD(setCameraOffset);
     NCB_METHOD(startWind);
     NCB_METHOD(stopWind);
-    NCB_METHOD(contains);
+    // contains(label, x, y) / contains(x, y) 两参分发（见 EmotePlayer::cb_contains）
+    NCB_METHOD_RAW_CALLBACK(contains, &Player::cb_contains, 0);
     NCB_METHOD(skip);
     NCB_METHOD(skipToSync);
     NCB_METHOD(stop);

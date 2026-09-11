@@ -237,14 +237,18 @@ bool D3DEmotePlayer::containsLabel(tTJSString label, tjs_real x, tjs_real y)
         // 两者相差层的仿射变换，直接透传会导致判定区域与画面错位（层无变换时偏移半屏）。
         // 这里用 Layer->Matrix（脚本 setMatrix 存入的同一矩阵，即 revmtx 的正变换）
         // 把层本地坐标还原为 primary 中心坐标，再加半屏转成设备像素。
-        // Matrix 与 revmtx 严格互逆，缩放/旋转/剪切层均正确；层无变换时退化为 x + W/2。
+        // 矩阵为行向量约定（与 DrawDeviceD3D 渲染路径一致）：
+        //   X = m11*x + m21*y + m41, Y = m12*x + m22*y + m42
+        // 即 X 取 Matrix[0]/[4]/[12]，Y 取 Matrix[1]/[5]/[13]。
+        // 此前按列向量取 Matrix[1]/[4]，轴对齐层（无旋转，m12=m21=0）时
+        // 两者等价不出错；带旋转/斜切的层（如 NEKOPARA After）则判定错位。
         float lx = (float)x, ly = (float)y;
         float wx = lx, wy = ly;
         if (Layer && Device)
         {
-            wx = Layer->Matrix[0] * lx + Layer->Matrix[1] * ly + Layer->Matrix[12] +
+            wx = Layer->Matrix[0] * lx + Layer->Matrix[4] * ly + Layer->Matrix[12] +
                  Device->GetWidth() * 0.5f;
-            wy = Layer->Matrix[4] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
+            wy = Layer->Matrix[1] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
                  Device->GetHeight() * 0.5f;
         }
         return Impl->Player->containsLabel(label, wx, wy);
@@ -256,14 +260,14 @@ bool D3DEmotePlayer::contains(tjs_real x, tjs_real y)
 {
     if (Impl && Impl->Player)
     {
-        // 与 containsLabel 相同的坐标空间换算（层本地 → 设备像素）
+        // 与 containsLabel 相同的坐标空间换算（层本地 → 设备像素，行向量约定）
         float lx = (float)x, ly = (float)y;
         float wx = lx, wy = ly;
         if (Layer && Device)
         {
-            wx = Layer->Matrix[0] * lx + Layer->Matrix[1] * ly + Layer->Matrix[12] +
+            wx = Layer->Matrix[0] * lx + Layer->Matrix[4] * ly + Layer->Matrix[12] +
                  Device->GetWidth() * 0.5f;
-            wy = Layer->Matrix[4] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
+            wy = Layer->Matrix[1] * lx + Layer->Matrix[5] * ly + Layer->Matrix[13] +
                  Device->GetHeight() * 0.5f;
         }
         return Impl->Player->contains(wx, wy);
