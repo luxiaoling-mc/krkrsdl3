@@ -80,14 +80,14 @@ MsgQueueReturnCode CDVDMessageQueue::Put(CDVDMsg* pMsg, int priority, bool front
 {
     tTJSUniqueLock lock(m_section);
 
+    if (!pMsg)
+    {
+        return MSGQ_INVALID_MSG;
+    }
     if (!m_bInitialized)
     {
         pMsg->Release();
         return MSGQ_NOT_INITIALIZED;
-    }
-    if (!pMsg)
-    {
-        return MSGQ_INVALID_MSG;
     }
 
     if (priority > 0)

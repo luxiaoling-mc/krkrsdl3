@@ -412,6 +412,11 @@ void CVideoPlayerVideo::Execute()
             }
             else
             {
+                // decoder input queue is full (EAGAIN): drain output first so the
+                // decoder can accept this packet on the next loop iteration
+                if (!ProcessDecoderOutput(frametime, pts))
+                    Sleep(1);
+                pMsg->AddRef();
                 m_messageQueue.Put(pMsg, 0, false);
             }
         }

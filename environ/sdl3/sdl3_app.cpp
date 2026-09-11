@@ -588,7 +588,10 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
 
 void TVPSetWindowTitle(const char* title)
 {
-    SDL_SetWindowTitle(tvp_window, title);
+    if (!tvp_window)
+        return;
+    const char* override_title = SDL_getenv("KRKR_WINDOW_TITLE");
+    SDL_SetWindowTitle(tvp_window, (override_title && *override_title) ? override_title : title);
 }
 
 std::string TVPGetWindowTitle()
